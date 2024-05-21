@@ -3,10 +3,10 @@ import tensorflow as tf
 import numpy as np
 
 
-def generate_fake_data(n_subs, n_epochs, epoch_length):
+def generate_fake_data(n_subjects, n_epochs, epoch_length):
 
     data = pd.DataFrame()
-    n_rows = n_subs * n_epochs
+    n_rows = n_subjects * n_epochs
 
     labels = [np.round(np.random.uniform(0, 1)) for _ in range(n_rows)]  # label needs to be float
     
@@ -14,11 +14,11 @@ def generate_fake_data(n_subs, n_epochs, epoch_length):
     Y = [list(map(lambda x: round(x, 2), np.random.normal(scale=(label + 1) ** 1, size=epoch_length))) for label in labels]
     Z = [list(map(lambda x: round(x, 2), np.random.normal(scale=(label + 1) ** 1, size=epoch_length))) for label in labels]
     
-    sub_id = [id for id in range(n_subs) for epoch in range(n_epochs)]
-    epoch_id = [epoch for id in range(n_subs) for epoch in range(n_epochs)]
+    sub_id = [id for id in range(n_subjects) for epoch in range(n_epochs)]
+    epoch_id = [epoch for id in range(n_subjects) for epoch in range(n_epochs)]
 
     data = pd.DataFrame({
-        'id': sub_id,
+        'subject_id': sub_id,
         'epoch_id': epoch_id,
         'X': X,
         'Y': Y,
@@ -34,7 +34,7 @@ def generate_fake_data(n_subs, n_epochs, epoch_length):
 if __name__ == '__main__':
 
     df = generate_fake_data(
-        n_subs=3,
+        n_subjects=3,
         n_epochs=10,
         epoch_length=20
     )
