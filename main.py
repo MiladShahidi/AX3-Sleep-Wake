@@ -1,6 +1,6 @@
 import tensorflow as tf
 import datetime
-from metrics import F1Score
+from utils.metrics import F1Score
 import keras_tuner
 import os
 
@@ -16,8 +16,9 @@ def parse_tfrecord(example):
 
     context_features_spec = {
         'subject_id': tf.io.FixedLenFeature([], dtype=tf.int64),
-        'epoch_id': tf.io.FixedLenFeature([], dtype=tf.int64),
-        'epoch_ts': tf.io.FixedLenFeature([], dtype=tf.string),
+        'epoch_id': tf.io.VarLenFeature(dtype=tf.int64),
+        'epoch_ts': tf.io.VarLenFeature(dtype=tf.string),
+        'central_epoch_id': tf.io.FixedLenFeature([], dtype=tf.int64),
         'label': tf.io.FixedLenFeature([], dtype=tf.float32)
         }
 
@@ -34,13 +35,24 @@ def parse_tfrecord(example):
         # I don't like this. It's a quick hack to reshape each axis (X, Y, Z) to (T, ) rather than (T, 1)
         features[feature_name] = tf.squeeze(features[feature_name])
 
+    for feature_name, tensor in context.items():
+        if isinstance(tensor, tf.SparseTensor):
+            context[feature_name] = tf.sparse.to_dense(tensor)
+
+        # I don't like this. It's a quick hack to reshape each axis (X, Y, Z) to (T, ) rather than (T, 1)
+        context[feature_name] = tf.squeeze(context[feature_name])
+
     return context, features
 
 def reshape_features(context, features):
+    # Each dimension has shape (window length, epoch length)
+    # Here we first flatten (reshape) each one so that the measurements of consequtive epochs are 
+    # all placed in a flat tensor
+    # Then stack the 3 dimensions
     stacked_features = tf.stack([
-        features['X'],
-        features['Y'],
-        features['Z'],
+        tf.reshape(features['X'], shape=(-1,)),
+        tf.reshape(features['Y'], shape=(-1,)),
+        tf.reshape(features['Z'], shape=(-1,))
         ], axis=-1)
 
     # Note: For some reason, using stack here results in errors when fitting the model
@@ -80,7 +92,7 @@ def create_dataset(path, batch_size=None, repeat=True):
     return dataset
 
 
-class ToyModel(tf.keras.Model):
+class SleepModel(tf.keras.Model):
 
     def __init__(
             self,
@@ -92,9 +104,34 @@ class ToyModel(tf.keras.Model):
         self.rnn_layer = tf.keras.layers.LSTM(units=16)
         
         self.sample_every_n = sample_every_n
-        layer_sizes = [128, 64, 32, 16]
-        self.dense_layers = [tf.keras.layers.Dense(units=layer_size) for layer_size in layer_sizes]
-        self.output_layer = tf.keras.layers.Dense(units=1)
+        
+        self.model_layers = [
+            tf.keras.layers.Conv1D(filters=16, kernel_size=1024, activation='ReLU', strides=100),
+            tf.keras.layers.Dropout(rate=0.25),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.MaxPool1D(),
+
+            # tf.keras.layers.Conv1D(filters=16, kernel_size=256, activation='ReLU', strides=2),
+            # tf.keras.layers.Dropout(rate=0.25),
+            # tf.keras.layers.BatchNormalization(),
+
+            # tf.keras.layers.Conv1D(filters=16, kernel_size=256, activation='ReLU', strides=2),
+            # tf.keras.layers.Dropout(rate=0.25),
+            # tf.keras.layers.BatchNormalization(),
+            # tf.keras.layers.MaxPool1D(),
+
+            # tf.keras.layers.Conv1D(filters=16, kernel_size=32, activation='ReLU', strides=2),
+            # tf.keras.layers.Dropout(rate=0.25),
+            # tf.keras.layers.BatchNormalization(),
+
+            tf.keras.layers.LSTM(units=128),
+
+            tf.keras.layers.Dense(units=128, activation='ReLU'),
+            tf.keras.layers.Dropout(rate=0.25),
+            tf.keras.layers.BatchNormalization(),
+
+            tf.keras.layers.Dense(units=1, activation='sigmoid')
+        ]
 
     def call(self, inputs):
         xyz = inputs['XYZ']
@@ -103,14 +140,12 @@ class ToyModel(tf.keras.Model):
             # xyz.shape = (Batch Size, Epoch Length, 3). We're downsampling the epoch length dimension
             xyz = xyz[:, ::self.sample_every_n, :]  # Sample every n observation, e.g. 10 will downsample from 100 Hz to 10 Hz
         
-        signal = self.rnn_layer(xyz)
+        #####
 
-        for layer in self.dense_layers:
-            signal = layer(signal)
-
-        output = self.output_layer(signal)
+        for layer in self.model_layers:
+            xyz = layer(xyz)
         
-        return output
+        return xyz
     
 
 # def build_model(hp):
@@ -134,11 +169,11 @@ class ToyModel(tf.keras.Model):
 
 
 def train_data_filter(features, labels):
-    return features['epoch_id'] % 5 != 0
+    return features['central_epoch_id'] % 5 != 0
 
 
 if __name__ == '__main__':
-    datapath = 'data/processed/test_1/mixed'
+    datapath = 'data/processed/window_1'
 
     train_data = create_dataset(datapath).filter(train_data_filter).batch(128)
     val_data = create_dataset(datapath).filter(lambda x, y: not train_data_filter(x, y)).batch(128)
@@ -152,11 +187,11 @@ if __name__ == '__main__':
     #     # directory="hp_search",
     #     # project_name="sleep",
     # )
-    
+
     log_dir = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
 
-    model = ToyModel(sample_every_n=10)
+    model = ToyModel(sample_every_n=1)
 
     model.compile(
         optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-3),  # Legacy is because the current one runs slow on M1/M2 macs
@@ -171,9 +206,11 @@ if __name__ == '__main__':
 
     model.fit(
         train_data,
-        epochs=10,
+        epochs=1000,
         steps_per_epoch=100,
         validation_data=val_data,
-        validation_steps=50,
+        validation_steps=100,
         callbacks=[tensorboard_callback]
         )
+
+    # model.save('logs')
