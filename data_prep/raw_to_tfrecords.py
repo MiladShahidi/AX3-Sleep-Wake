@@ -4,6 +4,9 @@ import numpy as np
 import os
 import re
 import sys
+from functools import reduce
+from datetime import datetime
+
 
 # This enables importing modules from the parent directory
 parent = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -17,6 +20,21 @@ def get_subject_id(filename):
     filename = os.path.basename(filename)  # Remove path
     return int(re.split(r'\D+', filename.split('sub')[1])[0])
 
+
+def normalize_ax3_column(df, col):
+    # concatenate all epoch values to create a long list of numbers
+    vals = np.array(reduce(lambda x, y: x + y, df[col].values))
+    
+    m = np.mean(vals)
+    s = np.std(vals)
+    
+    def norm(l):
+        np_l = np.array(l)
+        np_l = np.round((np_l - m) / (s + 1e-8), 4)  # original data has 4 decimal places too
+        return list(np_l)  # each row of data is a list. So this returns a list to preserve that format
+    
+    return df[col].apply(norm)
+    
 
 def read_subject_features(raw_data_file):
     subject_id = get_subject_id(raw_data_file)
@@ -49,7 +67,7 @@ def read_subject_labels(label_file):
 
     missing_fltr = labels_df['label'].isin(['A', 'Artefact'])
     missing_pct = missing_fltr.mean()
-    print(f'Dropping missing epochs ({round(missing_pct * 100, 2)}%)')
+    # print(f'Dropping missing epochs ({round(missing_pct * 100, 2)}%)')
     labels_df = labels_df[~missing_fltr]
     
     labels_df['epoch_ts'] = labels_df['epoch_ts'].apply(lambda ts: ts.split(',')[0])  # There is a weird ",000" at the end of timestamps
@@ -57,7 +75,7 @@ def read_subject_labels(label_file):
     labels_df['epoch_ts'] = labels_df['epoch_ts'].str.strip()
     labels_df['epoch_ts'] = pd.to_datetime(labels_df['epoch_ts'], dayfirst=True)
 
-    labels_df['label'] = labels_df['label'].map(lambda l: 1 if l == 'Wake' else 0)
+    labels_df['label'] = labels_df['label'].map(lambda l: 0 if l == 'Wake' else 1)
     labels_df['label'] = labels_df['label'].astype(np.float32)  # TF requires labels to be float
 
     return labels_df
@@ -76,6 +94,13 @@ def join_features_and_labels(features_df, labels_df):
     unmatched_pct = subject_data['X'].isna().mean()
 
     return subject_data, unmatched_pct
+
+
+def normalize_measurements(df):
+    for col in ['X', 'Y', 'Z']:
+        df[col] = normalize_ax3_column(df, col)
+
+    return df
 
 
 def create_windowed_df(df, window_size):
@@ -127,12 +152,12 @@ def create_windowed_df(df, window_size):
 
 
 if __name__ == '__main__':
-    WINDOW_SIZE = 1
+    WINDOW_SIZE = 3
     
     project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
     raw_data_path = f'{project_root}/data/raw/Recordings'
     labels_path = f'{project_root}/data/raw/Labels'
-    output_path = f'{project_root}/data/processed/window_{WINDOW_SIZE}'
+    output_path = f'{project_root}/data/processed/normalised/window_{WINDOW_SIZE}'
 
     raw_data_files = [f'{raw_data_path}/{filename}' for filename in os.listdir(raw_data_path) if filename.endswith('pkl')]
 
@@ -151,6 +176,9 @@ if __name__ == '__main__':
         labels_df = read_subject_labels(labels_filename)
 
         subject_data, unmatched = join_features_and_labels(features_df, labels_df)
+
+        print('Normalizing measurements...')
+        subject_data = normalize_measurements(subject_data)
 
         if unmatched > 0:  # Unmatched rows will have missing feature values
             print(f"*** WARNING: Missing data for {round(unmatched * 100)}% of labels ***")

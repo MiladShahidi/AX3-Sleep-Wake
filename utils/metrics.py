@@ -36,6 +36,54 @@ class F1Score(tf.keras.metrics.Metric):
         self.predicted_true.assign(0.)
 
 
+class PositiveRate(tf.keras.metrics.Metric):
+
+    def __init__(self, name='positive_rate', **kwargs):
+        super(PositiveRate, self).__init__(name=name, **kwargs)
+        self.positive_samples = self.add_weight(name='positive_rate', initializer='zeros')
+        self.n_items = self.add_weight(name='n_items', initializer='zeros')
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        # mask = tf.math.logical_not(tf.math.equal(y_true, LABEL_PAD))
+        # mask = tf.cast(mask, dtype=y_true.dtype)
+
+        # masked_y_true = y_true * mask
+
+        self.positive_samples.assign_add(tf.reduce_sum(y_true))
+        self.n_items.assign_add(tf.cast(tf.size(y_true), tf.float32))
+
+    def result(self):
+        return self.positive_samples / self.n_items
+
+    def reset_state(self):
+        self.positive_samples.assign(0.)
+        self.n_items.assign(0.)
+
+
+class PredictedPositives(tf.keras.metrics.Metric):
+
+    def __init__(self, name='pred_positives', **kwargs):
+        super(PredictedPositives, self).__init__(name=name, **kwargs)
+        self.n_pred_positives = self.add_weight(name='pred_returned', initializer='zeros')
+        self.n_items = self.add_weight(name='n_items', initializer='zeros')
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_pred = tf.round(y_pred)  # threshold = 0.5
+        # mask = tf.math.logical_not(tf.math.equal(y_true, LABEL_PAD))
+        # mask = tf.cast(mask, dtype=y_true.dtype)
+
+        # masked_y_pred = y_pred * mask
+
+        self.n_pred_positives.assign_add(tf.reduce_sum(y_pred))
+        self.n_items.assign_add(tf.cast(tf.size(y_pred), tf.float32))
+
+    def result(self):
+        return self.n_pred_positives / self.n_items
+
+    def reset_state(self):
+        self.n_pred_positives.assign(0.)
+        self.n_items.assign(0.)
+
 if __name__ == '__main__':
     import numpy as np
     from sklearn.metrics import f1_score
