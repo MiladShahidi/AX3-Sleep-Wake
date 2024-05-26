@@ -96,7 +96,12 @@ def join_features_and_labels(features_df, labels_df):
     return subject_data, unmatched_pct
 
 
-def temp_hack(subject_id, features_df, labels_df):
+def write_labelled_and_unlabelled(subject_id, features_df, labels_df):
+    """
+    This is irrelevant to the main purpose of this script
+    It splits data into labelled and unlabelled subsets and
+    writes the two in separate Pickled files.
+    """
     os.makedirs('temp_output/labelled', exist_ok=True)
     os.makedirs('temp_output/unlabelled', exist_ok=True)
 
@@ -195,9 +200,6 @@ if __name__ == '__main__':
 
         labels_filename = f'{labels_path}/SDRI001_PSG_Sleep profile_{subject_id:03d}V4_N1.txt'
         labels_df = read_subject_labels(labels_filename)
-
-        temp_hack(subject_id, features_df, labels_df)
-        continue
 
         subject_data, unmatched = join_features_and_labels(features_df, labels_df)
 
