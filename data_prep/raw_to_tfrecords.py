@@ -41,7 +41,7 @@ def read_subject_features(raw_data_file):
     with open(raw_data_file, 'rb') as f:
         subject_data = pickle.load(f)
 
-    subject_data = subject_data[['Label', 'X', 'Y', 'Z']]
+    subject_data = subject_data[['Label', 'X', 'Y', 'Z', 'Temp']]
     subject_data = subject_data.rename({'Label': 'epoch_ts'}, axis=1)
     subject_data['epoch_ts'] = subject_data['epoch_ts'].str.strip()
     subject_data['epoch_ts'] = pd.to_datetime(subject_data['epoch_ts'])
@@ -94,6 +94,27 @@ def join_features_and_labels(features_df, labels_df):
     unmatched_pct = subject_data['X'].isna().mean()
 
     return subject_data, unmatched_pct
+
+
+def temp_hack(subject_id, features_df, labels_df):
+    os.makedirs('temp_output/labelled', exist_ok=True)
+    os.makedirs('temp_output/unlabelled', exist_ok=True)
+
+    subject_data = pd.merge(
+        left=features_df,
+        right=labels_df,
+        left_on='epoch_ts',
+        right_on='epoch_ts',
+        how='left'
+        ).sort_values('epoch_ts')
+
+    label_fltr = ~subject_data['label'].isna()
+    
+    labelled_df = subject_data[label_fltr]
+    unlabelled_df = subject_data[~label_fltr]
+
+    labelled_df.to_pickle(f'temp_output/labelled/labelled_AX3_sub_{subject_id:02d}.pkl', compression=None)
+    unlabelled_df.to_pickle(f'temp_output/unlabelled/unlabelled_AX3_sub_{subject_id:02d}.pkl', compression=None)
 
 
 def normalize_measurements(df):
@@ -152,12 +173,12 @@ def create_windowed_df(df, window_size):
 
 
 if __name__ == '__main__':
-    WINDOW_SIZE = 3
+    WINDOW_SIZE = 1
     
     project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
     raw_data_path = f'{project_root}/data/raw/Recordings'
     labels_path = f'{project_root}/data/raw/Labels'
-    output_path = f'{project_root}/data/processed/normalised/window_{WINDOW_SIZE}'
+    output_path = f'{project_root}/data/processed/test/window_{WINDOW_SIZE}'
 
     raw_data_files = [f'{raw_data_path}/{filename}' for filename in os.listdir(raw_data_path) if filename.endswith('pkl')]
 
@@ -175,10 +196,13 @@ if __name__ == '__main__':
         labels_filename = f'{labels_path}/SDRI001_PSG_Sleep profile_{subject_id:03d}V4_N1.txt'
         labels_df = read_subject_labels(labels_filename)
 
+        temp_hack(subject_id, features_df, labels_df)
+        continue
+
         subject_data, unmatched = join_features_and_labels(features_df, labels_df)
 
         print('Normalizing measurements...')
-        subject_data = normalize_measurements(subject_data)
+        # subject_data = normalize_measurements(subject_data)
 
         if unmatched > 0:  # Unmatched rows will have missing feature values
             print(f"*** WARNING: Missing data for {round(unmatched * 100)}% of labels ***")
@@ -193,7 +217,7 @@ if __name__ == '__main__':
         subject_data['epoch_ts'] = subject_data['epoch_ts'].astype('str')  # TF Example, etc. don't support datetime
         
         windowed_df = create_windowed_df(subject_data, window_size=WINDOW_SIZE)
-        
+
         # In princeiple, it's not necessary to group by all of the following
         # But the converter function converts the values of groupby columns as scalars (not lists)
         # So, we group by all constant columns so that they'll be converted into scalars

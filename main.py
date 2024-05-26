@@ -52,17 +52,17 @@ def reshape_features(context, features):
     # all placed in a flat tensor
     # Then stack the 3 dimensions
     measurements = tf.concat([
-        tf.expand_dims(features['X'], axis=1),
-        tf.expand_dims(features['Y'], axis=1),
-        tf.expand_dims(features['Z'], axis=1),
-        ], axis=-1)
+        tf.expand_dims(features['X'], axis=-1),
+        tf.expand_dims(features['Y'], axis=-1),
+        tf.expand_dims(features['Z'], axis=-1),
+        ], axis=-1)  # (window size, epoch length, n_axes)
 
-    triaxial = tf.norm(measurements, ord=2, axis=1, keepdims=True)  # L2 Norm
+    # triaxial = tf.norm(measurements, ord=2, axis=1, keepdims=True)  # L2 Norm
 
-    stacked_features = tf.concat([
-        measurements,
-        triaxial
-    ], axis=-1)
+    # stacked_features = tf.concat([
+    #     measurements,
+    #     triaxial
+    # ], axis=-1)
 
     # Note: For some reason, using stack here results in errors when fitting the model
     # and it complains about receiving a tensor with unknown shape
@@ -72,7 +72,7 @@ def reshape_features(context, features):
     # triaxial = tf.reshape(triaxial, shape=(epoch_length, 1))
     
     seq_features = {
-        'XYZ': stacked_features
+        'XYZ': tf.reshape(measurements, (-1, 3))
         # 'XYZ': tf.reshape(triaxial, shape=(3000, ))
         # 'XYZ': tf.random.normal(mean=1, stddev=1, shape=(3000, )),
     }
@@ -177,7 +177,7 @@ class SleepModel(tf.keras.Model):
             # xyz.shape = (Batch Size, Epoch Length, 3). We're downsampling the epoch length dimension
             x = x[:, ::self.sample_every_n, :]  # Sample every n observation, e.g. 10 will downsample from 100 Hz to 10 Hz
 
-        x = tf.reshape(x, shape=(-1, 1000, 4))
+        x = tf.reshape(x, shape=(-1, 3000, 3))
         
         x = self.input_batch_norm(x)
 
@@ -249,7 +249,7 @@ def data_split_filter(features, labels, ids):
 
 
 if __name__ == '__main__':
-    datapath = 'data/processed/normalised/window_1'
+    datapath = 'data/processed/normalised/window_5'
 
     train_subject_ids = tf.constant(range(1, 30 + 1), dtype=tf.int64)
     val_subject_ids = tf.constant(range(31, 35 + 1), dtype=tf.int64)
@@ -277,7 +277,7 @@ if __name__ == '__main__':
     tensorboard_logs = f"{output_dir}/tb_logs/{timestamp}"
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=tensorboard_logs, histogram_freq=1)
     reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(factor=0.1, patience=7, min_lr=1e-6)
-    model = SleepModel(sample_every_n=3)
+    model = SleepModel(sample_every_n=5)
 
     model.compile(
         optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-3),  # Legacy is because the current one runs slow on M1/M2 macs
