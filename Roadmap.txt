@@ -1,0 +1,9 @@
+1- process raw data from toolbox
+2- add Temp 
+3- hyper parameters tunning -> find the optimum model (LOOCV)
+4- test different window length, test different frequencies of AX3 (50, 10, 1, 0.1)
+5- apply optimum model on unseen data (days in home) -> prediction
+6- compare metircs  -> 
+    (Sleep summary measures (TST, WASO, ...) by (Sleep diary, AWS, Biobank, our model) and  
+    Epoch-by-epoch concordance (accuracy, F1, recall, specificity, Cohen's Kappa))
+7- visualisation to compare all sources (Sleep diary, AWS, Biobank, our model)

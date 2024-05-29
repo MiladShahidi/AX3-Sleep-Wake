@@ -5,3 +5,5 @@ Pad the first and the last epochs when creating windows
 lr in tb
 
 save and use last best model when using early stopping, and not the very last epoch
+
+input batch_norm?

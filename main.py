@@ -4,7 +4,7 @@ from utils.metrics import F1Score, PositiveRate, PredictedPositives
 import os
 from functools import partial
 import numpy as np
-from utils.data_utils import read_subject_labels
+from utils.data_utils import read_PSG_labels
 import pandas as pd
 from sklearn.metrics import (
     f1_score,
@@ -15,6 +15,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import KFold
 from utils.training_utils import CustomTensorBoard
+from config import project_config as config
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress warnings and debug info mesasages
 
@@ -109,7 +110,7 @@ def reshape_features(context, features):
     return  features, label
 
 
-def create_dataset(path, filter_fn=None, batch_size=None, repeat=True, shuffle=True):
+def create_dataset(path, filters=None, batch_size=None, repeat=True, shuffle=True):
     if tf.io.gfile.isdir(path):
         # filenames = [f'{path}/{filename}' for filename in tf.io.gfile.listdir(path)]
         files = tf.data.Dataset.list_files(f"{path}/*.tfrecord", shuffle=True)
@@ -119,8 +120,9 @@ def create_dataset(path, filter_fn=None, batch_size=None, repeat=True, shuffle=T
 
     dataset = dataset.map(parse_tfrecord).map(reshape_features)
 
-    if filter_fn is not None:
-      dataset = dataset.filter(filter_fn)
+    if filters is not None:
+      for filter in filters:
+        dataset = dataset.filter(filter)
       
     if shuffle:
       shuffle_buffer_size = 10000 if batch_size is None else batch_size * 10
@@ -195,7 +197,7 @@ class SleepModel(tf.keras.Model):
             # xyz.shape = (Batch Size, Epoch Length, 3). We're downsampling the epoch length dimension
             x = x[:, ::self.sample_every_n, :]  # Sample every n observation, e.g. 10 will downsample from 100 Hz to 10 Hz
 
-        x = tf.reshape(x, shape=(-1, 3000, 5))
+        x = tf.reshape(x, shape=(-1, 1800, 5))
         
         x = self.input_batch_norm(x)
 
@@ -222,48 +224,8 @@ class SleepModel(tf.keras.Model):
         return {
             'epoch_ts': inputs['central_epoch_ts'],
             'subject_id': inputs['subject_id'],
-            'prediction': output
+            'pred': output
         }
-
-
-class ToyModel(tf.keras.Model):
-
-    def __init__(
-            self,
-            sample_every_n=None,
-            name='SleepModel',
-            **kwargs
-            ):
-        super().__init__(name=name, **kwargs)
-        
-        self.sample_every_n = sample_every_n        
-
-        self.model_layers = [
-            # tf.keras.layers.Dense(128, activation='sigmoid'),
-            # tf.keras.layers.Dense(64, activation='sigmoid'),
-            tf.keras.layers.Dense(32, activation='sigmoid')
-        ]
-        self.output_layer = tf.keras.layers.Dense(units=1, activation='sigmoid')
-        self.batch_norm = tf.keras.layers.BatchNormalization()
-
-    def call(self, inputs):
-        x = inputs['XYZ']
-
-        # Downsampling
-        if self.sample_every_n:
-            # xyz.shape = (Batch Size, Epoch Length, 3). We're downsampling the epoch length dimension
-            x = x[:, ::self.sample_every_n, :]  # Sample every n observation, e.g. 10 will downsample from 100 Hz to 10 Hz
-        
-        x = tf.reshape(x, shape=(-1, 3000))
-
-        x = self.batch_norm(x)
-
-        for layer in self.model_layers:
-            x = layer(x)
-        
-        output = self.output_layer(x)
-
-        return output
 
 
 def drop_subjects(features, labels, subject_ids):
@@ -275,26 +237,90 @@ def keep_subjects(features, labels, subject_ids):
     return tf.reduce_any(tf.equal(features['subject_id'], subject_ids))
 
 
-if __name__ == '__main__':
+def train_model(
+        datapath,
+        train_val_ids,
+        output_dir,
+        model_nickname,
+        save_checkpoints
+):
 
-    datapath = 'data/Tensorflow/normalised/window_3'
-    psg_labes_path = 'data/raw/Labels'
-    output_dir = 'training_output'
-    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     saved_models_dir = f'{output_dir}/savedmodels/{timestamp}'
     tensorboard_logdir = f"{output_dir}/tb_logs/{timestamp}"
+
+    train_data = create_dataset(
+        datapath,
+        filters=[
+            partial(keep_subjects, subject_ids=train_val_ids),
+            lambda x, y: x['central_epoch_id'] % 5 != 0
+            ],
+        batch_size=128
+        )
+
+    val_data = create_dataset(
+        datapath,
+        filters=[
+            partial(keep_subjects, subject_ids=train_val_ids),
+            lambda x, y: x['central_epoch_id'] % 5 == 0
+            ],
+        batch_size=100
+        )
+    
+    callbacks = [
+        CustomTensorBoard(log_dir=f"{tensorboard_logdir}/{model_nickname}"),
+        tf.keras.callbacks.ReduceLROnPlateau(factor=0.1, patience=7, min_lr=1e-6),
+        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=15, start_from_epoch=30)
+    ]
+    if save_checkpoints:
+        callbacks += [tf.keras.callbacks.ModelCheckpoint(saved_models_dir, monitor='val_loss', save_best_only=True)]
+
+    model = SleepModel(sample_every_n=5)
+
+    model.compile(
+        optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-3),  # Legacy is because the current one runs slow on M1/M2 macs
+        loss={'pred': tf.keras.losses.BinaryCrossentropy(name='Loss')},
+        metrics={'pred': [
+            tf.keras.metrics.BinaryAccuracy(name='Accuracy'),
+            tf.keras.metrics.Recall(name='Recall'),
+            tf.keras.metrics.Precision(name='Precision'),
+            F1Score(name='F1Score'),
+            PositiveRate(name='PositiveRate'),
+            PredictedPositives(name='PredictedPositives')
+            ]}
+            )
+
+    model.fit(
+        train_data,
+        # class_weight={0: 0.7, 1: 0.3},
+        epochs=1000,
+        steps_per_epoch=100,
+        validation_data=val_data,
+        validation_steps=100,
+        callbacks=callbacks
+        )
+
+    model.save(f'{saved_models_dir}/{model_nickname}')
+
+    return model
+
+
+if __name__ == '__main__':
+
+    datapath = 'data/Tensorflow/normalised/window_3/labelled'
+    psg_labes_path = 'data/PSG-Labels'
+    output_dir = 'training_output'
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     performance_output_path = f'{output_dir}/Performance/{timestamp}'
 
-    all_subject_ids = np.array([id for id in range(1, 36) if id != 27])
+    # all_subject_ids = np.array([id for id in range(1, 29) if id != 27])
+    # all_subject_ids = config['subject_ids']
+    all_subject_ids = np.array(config['subject_ids'])
 
-    # # # # # # Read all PSG labels
+    # Read all PSG labels to compute metrics during CV
     psg_labels = pd.DataFrame()
     for id in all_subject_ids:
-        label_file_name = f'{psg_labes_path}/SDRI001_PSG_Sleep profile_{id:03d}V4_N1.txt'
-        subject_labels = read_subject_labels(label_file_name)
-        cols = list(subject_labels.columns)
-        subject_labels['subject_id'] = id
-        subject_labels = subject_labels[['subject_id'] + cols]
+        subject_labels = read_PSG_labels(psg_labes_path, id)
+        subject_labels.insert(0, 'subject_id', id)
         psg_labels = pd.concat([psg_labels, subject_labels])
 
     metric_fns = {
@@ -304,90 +330,72 @@ if __name__ == '__main__':
         "Cohen's Kappa": lambda y_true, y_pred: cohen_kappa_score(y1=y_true, y2=y_pred),
         'Specificity': lambda y_true, y_pred: classification_report(y_true=y_true, y_pred=y_pred, output_dict=True, labels=[0, 1])['0']['precision']
     }
-    metrics = {metric_name: [] for metric_name in metric_fns.keys()}
-    
+
     os.makedirs(performance_output_path)
     
-    kfold_splitter = KFold(7)
+    kfold_splitter = KFold(12)
 
-    for i, (train_index, test_index) in enumerate(kfold_splitter.split(all_subject_ids)):
-        
-        train_ids = all_subject_ids[train_index]
+    metrics_df = pd.DataFrame()
+
+    # for fold_number, (train_index, test_index) in enumerate(kfold_splitter.split(all_subject_ids)):
+    for fold_number, (train_index, test_index) in enumerate([(np.arange(0, len(all_subject_ids)), [])]):  # For training on all subjects
+
+        train_val_ids = all_subject_ids[train_index]
         test_ids = all_subject_ids[test_index]
 
-        train_val_data = create_dataset(datapath,
-                                        filter_fn=partial(drop_subjects, subject_ids=test_ids),
-                                        batch_size=128)
+        print('*'*80)
+        print(f'Starting Fold {fold_number}')
+        print(f'Test subjects: {test_ids}')
+        print('-'*40)
 
-        train_data = create_dataset(datapath,
-                                    filter_fn=lambda x, y: x['central_epoch_id'] % 5 != 0,
-                                    batch_size=128)
-        
-        val_data = create_dataset(datapath,
-                                  filter_fn=lambda x, y: x['central_epoch_id'] % 5 == 0,
-                                  batch_size=128)
+        if len(test_ids) > 0:
+            model_nickname = f"model_excl_{np.min(test_ids):02d}_to_{np.max(test_ids):02d}"
+        else:
+            model_nickname = 'SleepModel'
 
-        test_data = create_dataset(datapath,
-                                   filter_fn=partial(keep_subjects, subject_ids=test_ids),
-                                   repeat=False, shuffle=False, batch_size=100)
-
-        model_nickname = f"model_excl_{np.min(test_ids):02d}_to_{np.max(test_ids):02d}"
-        
-        callbacks = [
-            CustomTensorBoard(log_dir=f"{tensorboard_logdir}/{model_nickname}"),
-            # tf.keras.callbacks.TensorBoard(log_dir=f"{tensorboard_logdir}/{model_nickname}"),
-            tf.keras.callbacks.ReduceLROnPlateau(factor=0.1, patience=7, min_lr=1e-6),
-            tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, start_from_epoch=20)
-        ]
-
-        model = SleepModel(sample_every_n=3)
-
-        model.compile(
-            optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-2),  # Legacy is because the current one runs slow on M1/M2 macs
-            loss={'prediction': tf.keras.losses.BinaryCrossentropy()},
-            metrics={
-                'prediction': [
-                    tf.keras.metrics.BinaryAccuracy(),
-                    tf.keras.metrics.Recall(),
-                    tf.keras.metrics.Precision(),
-                    F1Score(),
-                    PositiveRate(),
-                    PredictedPositives()
-                    ]}
-                    )
-
-        model.fit(
-            train_data,
-            # class_weight={0: 0.7, 1: 0.3},
-            epochs=1000,
-            steps_per_epoch=100,
-            validation_data=val_data,
-            validation_steps=50,
-            callbacks=callbacks
+        model = train_model(
+            datapath=datapath,
+            train_val_ids=train_val_ids,
+            output_dir=output_dir,
+            model_nickname=model_nickname,
+            save_checkpoints=(len(test_ids) == 0)  # Don't save checkpoints during CV
             )
 
-        # model.save(f'{saved_models_dir}/{model_nickname}')
+        if len(test_ids) > 0:
+            metrics = {metric_name: [] for metric_name in metric_fns.keys()}  # Placeholder for metric values
 
-        pred = model.predict(test_data)
+            test_data = create_dataset(datapath,
+                                    filters=[partial(keep_subjects, subject_ids=test_ids)],
+                                    repeat=False, shuffle=False, batch_size=100)
 
-        pred['prediction'] = np.round(np.squeeze(pred['prediction']))  # Threshold = 0.5
-        pred = pd.DataFrame(pred)
-        pred['epoch_ts'] = pd.to_datetime(pred['epoch_ts'].str.decode("utf-8"))
+            pred = model.predict(test_data)
 
-        test_fold_labels = psg_labels[psg_labels['subject_id'].isin(test_ids)]
-        labels_pred_df = pd.merge(
-            left=test_fold_labels,
-            right=pred,
-            on=['subject_id', 'epoch_ts'],
-            how='left'
-        ).dropna()  # ToDo: Fix windowing so we won't have to dropna here
-        print('^*'*40)
-        print(f"Label-Prediction mismatch = {round(labels_pred_df['prediction'].isna().mean() * 100, 4)}")
-        print('^*'*40)
+            pred['pred'] = np.round(np.squeeze(pred['pred']))  # Threshold = 0.5
+            pred = pd.DataFrame(pred)
+            pred['epoch_ts'] = pd.to_datetime(pred['epoch_ts'].str.decode("utf-8"))
 
-        labels_pred_df.to_csv(f'{performance_output_path}/preds_{model_nickname}.csv', index=False)
-        for metric_name in metrics.keys():
-            metric = metric_fns[metric_name]
-            metrics[metric_name].append(round(metric(y_pred=labels_pred_df['prediction'], y_true=labels_pred_df['label']) * 100, 2))
+            test_fold_labels = psg_labels[psg_labels['subject_id'].isin(test_ids)]
+            labels_pred_df = pd.merge(
+                left=test_fold_labels,
+                right=pred,
+                on=['subject_id', 'epoch_ts'],
+                how='left'
+            )
+            print('^*'*40)
+            print(f"Label-Prediction mismatch = {round(labels_pred_df['pred'].isna().mean() * 100, 4)}")
+            print('^*'*40)
+            labels_pred_df = labels_pred_df.dropna()  # ToDo: Fix windowing for the first and last epochs so we won't have to dropna here
 
-        pd.DataFrame(metrics).to_csv(f'{performance_output_path}/metrics_{model_nickname}.csv', index=False)
+            labels_pred_df.to_csv(f'{performance_output_path}/preds_fold_{fold_number:02d}_{model_nickname}.csv', index=False)
+            
+            for metric_name, metric_fn in metric_fns.items():
+                metric_value = metric_fn(y_pred=labels_pred_df['pred'], y_true=labels_pred_df['label'])
+                metrics[metric_name].append(round(metric_value * 100, 2))
+            
+            fold_metrics = pd.DataFrame(metrics)
+            fold_metrics.insert(0, 'Fold', fold_number)
+            fold_metrics.insert(1, 'Test Subjects', f"{np.min(test_ids):02d} to {np.max(test_ids):02d}")
+
+            metrics_df = pd.concat([metrics_df, fold_metrics])
+
+            metrics_df.to_csv(f'{performance_output_path}/cv_metrics.csv', index=False)  # Overwrites to update every time
