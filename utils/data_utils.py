@@ -4,6 +4,7 @@ import os
 import pickle
 import numpy as np
 from actipy import read_device
+from config import project_config as config
 
 
 def read_PSG_labels(path, subject_id):
@@ -58,7 +59,7 @@ def read_AX3_pkl_epoch(path, subject_id, round_timestamps):
     return subject_data
 
 
-def read_AX3_cwa(path, subject_id, round_timestamps, freq=100, seconds_per_epoch=30):
+def read_AX3_cwa(path, subject_id, round_timestamps, freq=config['AX3_freq'], seconds_per_epoch=config['seconds_per_epoch']):
 
     rows_per_epoch = freq * seconds_per_epoch
 

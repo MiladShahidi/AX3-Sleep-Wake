@@ -133,12 +133,11 @@ def create_windowed_df(df, window_size):
 
 
 if __name__ == '__main__':
-    WINDOW_SIZE = 3
     
     project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
     pkl_data_path = f'{project_root}/data/Pickle'
     labels_path = f'{project_root}/data/PSG-Labels'
-    output_path = f'{project_root}/data/Tensorflow/normalised/window_{WINDOW_SIZE}'
+    output_path = f"{project_root}/data/Tensorflow/normalised/window_{config['window_size']}"
     
     # Constant strings for naming stuff
     LABELLED = 'labelled'
@@ -163,6 +162,9 @@ if __name__ == '__main__':
             assert len(os.listdir(output_paths[dataset_type])) == 0, f"Output directory is not empty ({dataset_type})."  # Prevents overwriting
 
     for subject_id in config['subject_ids']:
+
+        if subject_id < 23:
+            continue
 
         start_time = datetime.now()
 
@@ -198,7 +200,7 @@ if __name__ == '__main__':
                 print('\tConverting to TFRecords...')
                 datasets[dataset_type]['epoch_ts'] = datasets[dataset_type]['epoch_ts'].astype('str')  # TF Example, etc. don't support datetime
 
-                datasets[dataset_type] = create_windowed_df(datasets[dataset_type], window_size=WINDOW_SIZE)
+                datasets[dataset_type] = create_windowed_df(datasets[dataset_type], window_size=config['window_size'])
 
                 # In principle, it's not necessary to group by all of the following
                 # But the converter function converts the values of groupby columns as scalars (not lists)
