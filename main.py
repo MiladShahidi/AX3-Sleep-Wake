@@ -19,7 +19,7 @@ from config import project_config as config
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress warnings and debug info mesasages
 
-def parse_tfrecord(example):
+def parse_tfrecord(example, has_labels):
     seq_features_spec = {
         'X': tf.io.VarLenFeature(dtype=tf.float32),
         'Y': tf.io.VarLenFeature(dtype=tf.float32),
@@ -32,9 +32,10 @@ def parse_tfrecord(example):
         'epoch_id': tf.io.VarLenFeature(dtype=tf.int64),
         'epoch_ts': tf.io.VarLenFeature(dtype=tf.string),
         'central_epoch_id': tf.io.FixedLenFeature([], dtype=tf.int64),
-        'central_epoch_ts': tf.io.VarLenFeature(dtype=tf.string),
-        'label': tf.io.FixedLenFeature([], dtype=tf.float32)
+        'central_epoch_ts': tf.io.VarLenFeature(dtype=tf.string)
         }
+    if has_labels:
+        context_features_spec['label'] = tf.io.FixedLenFeature([], dtype=tf.float32)
 
     context, features, _ = tf.io.parse_sequence_example(
         example,
@@ -60,65 +61,59 @@ def parse_tfrecord(example):
 
 
 def reshape_features(context, features):
-    # Each dimension has shape (window length, epoch length)
-    # Here we first flatten (reshape) each one so that the measurements of consequtive epochs are 
-    # all placed in a flat tensor
-    # Then stack the 3 dimensions
-    accel = tf.concat([
-        tf.expand_dims(features['X'], axis=-1),  # expand dimensions to insert a new axis for X, Y, Z
+    # Each feature (X, Y, Z, etc.) has shape (window length, epoch length)
+    xyz = tf.concat([
+        tf.expand_dims(features['X'], axis=-1),  # expand dimensions and insert a new axis for X, Y, Z
         tf.expand_dims(features['Y'], axis=-1),
-        tf.expand_dims(features['Z'], axis=-1),
-        ], axis=-1)  # (window size, epoch length, n_axes)
-    
-    temperature = tf.expand_dims(features['Temp'], axis=-1)
-
+        tf.expand_dims(features['Z'], axis=-1)
+        ], axis=-1)
+        
     # axis=-1 means last one. This is the axis we just created above.
     # This finds the L2 norm over the X-Y-Z axis
-    triaxial = tf.norm(accel, ord=2, axis=-1, keepdims=True)  # L2 Norm
+    triaxial_l2_norm = tf.norm(xyz, ord=2, axis=-1, keepdims=True)  # L2 Norm
 
-    # Concatenate along the XYZ axis
-    # measurements:     (win size, epoch len, 3)
-    # triaxial:         (win size, epoch len, 1)
-    # stacked_features: (win size, epoch len, 4)
-    stacked_features = tf.concat([
-        accel,
-        triaxial,
-        temperature
-    ], axis=-1)
+    feature_list = [
+        tf.expand_dims(features['X'], axis=-1),
+        tf.expand_dims(features['Y'], axis=-1),
+        tf.expand_dims(features['Z'], axis=-1),
+        tf.expand_dims(features['Temp'], axis=-1),
+        triaxial_l2_norm,
+    ]
 
-    # Note: For some reason, using stack here results in errors when fitting the model
-    # and it complains about receiving a tensor with unknown shape
-    # The following reshape explicitly sets teh shape and fixes that error, but this is not ideal
-    # epoch_length = tf.shape(features['X'])[0]
-    # measurements = tf.reshape(measurements, shape=(epoch_length, 3))
-    # triaxial = tf.reshape(triaxial, shape=(epoch_length, 1))
+    stacked_features = tf.concat(feature_list, axis=-1)
     
+    # stacked_features.shape is (win_size, epoch len, n_sequences)
+    # Below, we combine the first two dimensions, i.e. concatenate all epochs in the window
+    # And make it (win_size * epoch len, n_sequences)
+    n_sequences = len(feature_list)
     seq_features = {
-        'measurements': tf.reshape(stacked_features, (-1, 5)),
-        # 'temp': temperature
-        # 'XYZ': tf.reshape(measurements, (-1, 3))
-        # 'XYZ': tf.random.normal(mean=1, stddev=1, shape=(3000, )),
+        'features': tf.reshape(stacked_features, (-1, n_sequences)),
     }
-    label = context.pop('label')
-
-    # # # # # #
-    # label = tf.squeeze(tf.cast(tf.math.reduce_mean(triaxial, axis=0) <= 1, tf.float32))
-    # # # # # #
-
-    features = {**seq_features, **context}
-
-    return  features, label
-
-
-def create_dataset(path, filters=None, batch_size=None, repeat=True, shuffle=True):
-    if tf.io.gfile.isdir(path):
-        # filenames = [f'{path}/{filename}' for filename in tf.io.gfile.listdir(path)]
-        files = tf.data.Dataset.list_files(f"{path}/*.tfrecord", shuffle=True)
-        dataset = tf.data.TFRecordDataset(files)
+        
+    if 'label' in context:
+        label = context.pop('label')
+        features = {**seq_features, **context}
+        return features, label
     else:
-        dataset = tf.data.TFRecordDataset(path)
+        features = {**seq_features, **context}
+        return features
 
-    dataset = dataset.map(parse_tfrecord).map(reshape_features)
+
+def create_dataset(path, filters=None, has_labels=True, batch_size=None, repeat=True, shuffle=True):
+    
+    if tf.io.gfile.exists(path):  # This means it's either a single file name or a directory, not a pattern
+        
+        if tf.io.gfile.isdir(path):
+            files = tf.data.Dataset.list_files(f"{path}/*.tfrecord", shuffle=True)
+            dataset = tf.data.TFRecordDataset(files)
+        else:
+            dataset = tf.data.TFRecordDataset(path)
+    
+    else:  # It must be a pattern like data/sub01_*.tfrecord
+        files = tf.data.Dataset.list_files(path, shuffle=True)
+        dataset = tf.data.TFRecordDataset(files)
+
+    dataset = dataset.map(partial(parse_tfrecord, has_labels=has_labels)).map(reshape_features)
 
     if filters is not None:
       for filter in filters:
@@ -190,15 +185,14 @@ class SleepModel(tf.keras.Model):
 
 
     def call(self, inputs):
-        x = inputs['measurements']
+        x = inputs['features']
 
         # Downsampling
         if self.sample_every_n:
-            # xyz.shape = (Batch Size, Epoch Length, 3). We're downsampling the epoch length dimension
+            assert (config['AX3_freq'] * config['seconds_per_epoch']) % self.sample_every_n == 0, "Epoch length must be a multiple of downsampling rate."
+            # xyz.shape = (Batch Size, Input Length, 3). We're downsampling along axis=1 (input length)
             x = x[:, ::self.sample_every_n, :]  # Sample every n observation, e.g. 10 will downsample from 100 Hz to 10 Hz
 
-        x = tf.reshape(x, shape=(-1, 1800, 5))
-        
         x = self.input_batch_norm(x)
 
         # Making copies of the input tensor
@@ -228,12 +222,13 @@ class SleepModel(tf.keras.Model):
         }
 
 
-def drop_subjects(features, labels, subject_ids):
+def drop_subjects(features, labels=None, subject_ids=[]):
+    # This is vectorized and with reduce_all, because subject_ids is a list of possibly multiple ids
     return tf.reduce_all(tf.not_equal(features['subject_id'], subject_ids))
 
 
-def keep_subjects(features, labels, subject_ids):
-    # This is vectorized and with reduce_any, because subject_ids is a list of possible multiple ids
+def keep_subjects(features, labels=None, subject_ids=[]):
+    # This is vectorized and with reduce_any, because subject_ids is a list of possibly multiple ids
     return tf.reduce_any(tf.equal(features['subject_id'], subject_ids))
 
 
@@ -243,7 +238,7 @@ def train_model(
         output_dir,
         model_nickname,
         save_checkpoints
-):
+        ):
 
     saved_models_dir = f'{output_dir}/savedmodels/{timestamp}'
     tensorboard_logdir = f"{output_dir}/tb_logs/{timestamp}"
@@ -268,8 +263,8 @@ def train_model(
     
     callbacks = [
         CustomTensorBoard(log_dir=f"{tensorboard_logdir}/{model_nickname}"),
-        tf.keras.callbacks.ReduceLROnPlateau(factor=0.1, patience=7, min_lr=1e-6),
-        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=15, start_from_epoch=30)
+        tf.keras.callbacks.ReduceLROnPlateau(factor=0.1, patience=10, min_lr=1e-6),
+        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=20, start_from_epoch=30)
     ]
     if save_checkpoints:
         callbacks += [tf.keras.callbacks.ModelCheckpoint(saved_models_dir, monitor='val_loss', save_best_only=True)]
@@ -284,8 +279,8 @@ def train_model(
             tf.keras.metrics.Recall(name='Recall'),
             tf.keras.metrics.Precision(name='Precision'),
             F1Score(name='F1Score'),
-            PositiveRate(name='PositiveRate'),
-            PredictedPositives(name='PredictedPositives')
+            # PositiveRate(name='PositiveRate'),
+            # PredictedPositives(name='PredictedPositives')
             ]}
             )
 
@@ -299,14 +294,14 @@ def train_model(
         callbacks=callbacks
         )
 
-    model.save(f'{saved_models_dir}/{model_nickname}')
+    # model.save(f'{saved_models_dir}/{model_nickname}')
 
     return model
 
 
 if __name__ == '__main__':
 
-    datapath = 'data/Tensorflow/normalised/window_3/labelled'
+    datapath = f"data/Tensorflow/normalised/window_{config['window_size']}/labelled"
     psg_labes_path = 'data/PSG-Labels'
     output_dir = 'training_output'
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -316,7 +311,7 @@ if __name__ == '__main__':
     # all_subject_ids = config['subject_ids']
     all_subject_ids = np.array(config['subject_ids'])
 
-    # Read all PSG labels to compute metrics during CV
+    #  Read all PSG labels to compute metrics during CV
     psg_labels = pd.DataFrame()
     for id in all_subject_ids:
         subject_labels = read_PSG_labels(psg_labes_path, id)
@@ -333,7 +328,7 @@ if __name__ == '__main__':
 
     os.makedirs(performance_output_path)
     
-    kfold_splitter = KFold(12)
+    kfold_splitter = KFold(config['n_cv_folds'])
 
     metrics_df = pd.DataFrame()
 
