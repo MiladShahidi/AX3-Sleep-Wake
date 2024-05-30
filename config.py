@@ -6,4 +6,10 @@ project_config = {
     'downsample_by': 5,  # Sample 1 out of every n measurements, e.g. 5 will down sample 100 hz to 20 hz
 
     'n_cv_folds': 12,
+
+}
+
+constants = {
+    'SLEEP': 1,
+    'WAKE': 0
 }
