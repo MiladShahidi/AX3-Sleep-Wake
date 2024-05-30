@@ -148,8 +148,8 @@ if __name__ == '__main__':
 
     # The follwing controls which type of dataset will be written
     write_flag = {
-        LABELLED: False,
-        UNLABELLED: True
+        LABELLED: True,
+        UNLABELLED: False
     }
 
     assert write_flag[LABELLED] or write_flag[UNLABELLED], "At least one write flag must be set to True"
@@ -162,7 +162,7 @@ if __name__ == '__main__':
     for dataset_type in write_flag.keys():
         if write_flag[dataset_type]:
             os.makedirs(output_paths[dataset_type], exist_ok=True)
-            # assert len(os.listdir(output_paths[dataset_type])) == 0, f"Output directory is not empty ({dataset_type})."  # Prevents overwriting
+            assert len(os.listdir(output_paths[dataset_type])) == 0, f"Output directory is not empty ({dataset_type})."  # Prevents overwriting
 
     for subject_id in config['subject_ids']:
 
@@ -188,8 +188,6 @@ if __name__ == '__main__':
         for dataset_type in write_flag.keys():
             if write_flag[dataset_type]:
                 print(f'Processing {dataset_type} data...')
-                # print('*'*80)
-                # print(datasets[dataset_type].head())
                 
                 # Since unlabelled data is too large and normalising it takes a long time, we use the "approximate" method
                 print('\tNormalizing features...')
@@ -198,8 +196,7 @@ if __name__ == '__main__':
                     columns=['X', 'Y', 'Z', 'Temp'],
                     approximate=(dataset_type==UNLABELLED)
                     )
-                # print(datasets[dataset_type].head())
-                # print('*'*80)
+
                 print('\tConverting to TFRecords...')
                 datasets[dataset_type]['epoch_ts'] = datasets[dataset_type]['epoch_ts'].astype('str')  # TF Example, etc. don't support datetime
 
