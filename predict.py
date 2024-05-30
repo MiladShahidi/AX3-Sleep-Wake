@@ -11,7 +11,7 @@ if __name__ == '__main__':
 
     model_name = 'SleepModel-v0.1'
     saved_model_path = f'Model Repo/{model_name}'
-    datapath = 'data/Tensorflow/normalised/window_3/unlabelled/sub_01_1_of_3.tfrecord'
+    datapath = 'data/Tensorflow/normalised/window_3/unlabelled'
     pred_output_path = f'Predictions/{model_name}'
 
     os.makedirs(pred_output_path, exist_ok=True)
@@ -26,15 +26,15 @@ if __name__ == '__main__':
         }
     )
 
+    # # # # # # # # # # # # # # # # # # # # # # # # 
+    # # # # # # # ToDo: 16 is empty
     for subject_id in config['subject_ids']:
-        if subject_id > 4: 
-            break
 
         print(f'Making predictions for subject {subject_id}...')
         print('-' * 40)
         
         test_dataset = create_dataset(
-            f"data/Tensorflow/normalised/window_3/unlabelled/sub_{subject_id:02d}*",
+            f"{datapath}/sub_{subject_id:02d}*",
             has_labels=False,
             repeat=False,
             batch_size=100

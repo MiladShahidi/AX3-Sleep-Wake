@@ -21,8 +21,7 @@ if __name__ == '__main__':
     os.makedirs(output_path, exist_ok=True)
     assert len(os.listdir(output_path)) == 0, "Output directory is not empty."  # Avoid writing next to existing data files
     
-    for subject_id in [id for id in range(23, 36+1) if id != 27]:
-    # for subject_id in config['subject_ids']:
+    for subject_id in config['subject_ids']:
 
         print(f'Subject ID: {subject_id}')
         print('-' * 40)

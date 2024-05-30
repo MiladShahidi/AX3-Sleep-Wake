@@ -24,6 +24,7 @@ from utils.tfrecord_utils import pandas_to_tf_seq_example_list, write_to_tfrecor
 
 
 def normalize_ax3_column(df, col, approximate=False):
+    print(f'\tNormalising {col}')
     # concatenate epoch values to create a long list of numbers
     if approximate:
         # This flag helps speed up normalization for large data (unlabelled data is large)
@@ -37,6 +38,8 @@ def normalize_ax3_column(df, col, approximate=False):
 
     m = np.mean(vals)
     s = np.std(vals)
+    print(f'\tMean: {m}')
+    print(f'\tStd : {s}')
     
     def norm(l):
         np_l = np.array(l)
@@ -159,19 +162,16 @@ if __name__ == '__main__':
     for dataset_type in write_flag.keys():
         if write_flag[dataset_type]:
             os.makedirs(output_paths[dataset_type], exist_ok=True)
-            assert len(os.listdir(output_paths[dataset_type])) == 0, f"Output directory is not empty ({dataset_type})."  # Prevents overwriting
+            # assert len(os.listdir(output_paths[dataset_type])) == 0, f"Output directory is not empty ({dataset_type})."  # Prevents overwriting
 
     for subject_id in config['subject_ids']:
-
-        if subject_id < 23:
-            continue
 
         start_time = datetime.now()
 
         print(f'Subject ID: {subject_id}')
         print('-' * 20)
 
-        print('Reading recordings...')
+        print('Reading Pickled recordings...')
         features_df = read_AX3_pkl_epoch(pkl_data_path, subject_id, round_timestamps=True)
         features_df.insert(0, 'subject_id', subject_id)
 
@@ -188,7 +188,9 @@ if __name__ == '__main__':
         for dataset_type in write_flag.keys():
             if write_flag[dataset_type]:
                 print(f'Processing {dataset_type} data...')
-        
+                # print('*'*80)
+                # print(datasets[dataset_type].head())
+                
                 # Since unlabelled data is too large and normalising it takes a long time, we use the "approximate" method
                 print('\tNormalizing features...')
                 datasets[dataset_type] = normalize_measurements(
@@ -196,7 +198,8 @@ if __name__ == '__main__':
                     columns=['X', 'Y', 'Z', 'Temp'],
                     approximate=(dataset_type==UNLABELLED)
                     )
-        
+                # print(datasets[dataset_type].head())
+                # print('*'*80)
                 print('\tConverting to TFRecords...')
                 datasets[dataset_type]['epoch_ts'] = datasets[dataset_type]['epoch_ts'].astype('str')  # TF Example, etc. don't support datetime
 
@@ -216,4 +219,3 @@ if __name__ == '__main__':
 
         print('Took ', datetime.now() - start_time)
         print('*'*80)
-
