@@ -179,7 +179,7 @@ class SleepModel(tf.keras.Model):
         ]
 
         # TODO: Looks like there is an additional matrix multiplication after (at the end of) attention in the paper (W_o)
-        # self.attn = tf.keras.layers.Attention(use_scale=False)
+        self.attn = tf.keras.layers.Attention(use_scale=False)
         self.pooling = tf.keras.layers.GlobalAveragePooling1D()
         self.output_layer = tf.keras.layers.Dense(units=1, activation='sigmoid')
 
@@ -203,9 +203,9 @@ class SleepModel(tf.keras.Model):
         for layer in self.cnn_route:
             cnn_signal = layer(cnn_signal)
         
-        # temporal_attn = self.attn([x, x, x])
+        temporal_attn = self.attn([cnn_signal, cnn_signal, cnn_signal], use_causal_mask=True)
 
-        cnn_signal = self.pooling(cnn_signal)  # TODO: The paper weights attn by a scalar
+        cnn_signal = self.pooling(cnn_signal + temporal_attn)  # TODO: The paper weights attn by a scalar
 
         # LSTM route
         # for layer in self.lstm_route:
@@ -346,7 +346,7 @@ if __name__ == '__main__':
         if len(test_ids) > 0:
             model_nickname = f"model_excl_{np.min(test_ids):02d}_to_{np.max(test_ids):02d}"
         else:
-            model_nickname = 'SleepModel'
+            model_nickname = 'AttnSleepModel'
 
         model = train_model(
             datapath=datapath,
