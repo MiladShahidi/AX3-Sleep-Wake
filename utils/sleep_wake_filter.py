@@ -37,8 +37,8 @@ def generic_sleep_wake_filter(sleep_series, convert_to, min_len):
 def filter_sleep_series(sleep_series):
     filters = [
         # Our epochs are 30-seconds long. So, 20 means 10 minutes and 120 means 60 minutes.
-        lambda s: generic_sleep_wake_filter(s, convert_to=constants['WAKE'], min_len=20),
         lambda s: generic_sleep_wake_filter(s, convert_to=constants['SLEEP'], min_len=20),
+        lambda s: generic_sleep_wake_filter(s, convert_to=constants['WAKE'], min_len=20),
         lambda s: generic_sleep_wake_filter(s, convert_to=constants['SLEEP'], min_len=120),
     ]
 

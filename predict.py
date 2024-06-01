@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import pandas as pd
-from main import create_dataset
+from train import create_dataset
 from utils.metrics import F1Score, PositiveRate, PredictedPositives
 from config import project_config as config
 import os

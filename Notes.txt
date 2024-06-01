@@ -1,7 +1,0 @@
-About non-wear:
-
-Non-wear is not observed ground truth. It's inferred by the toolbox (https://github.com/OxWearables/biobankAccelerometerAnalysis/tree/master)
-For training our models, we solely rely on our own ground truth labels (PSG). Even if the toolbox detects non-wear, PSG labels are more reliable.
-
-When predicting on non-labelled epochs however, and since we want to compare our performance to the toolbox, we need to remove those epochs for which
-the toolbox makes no prediction, i.e. (inferred) non-wear epochs.

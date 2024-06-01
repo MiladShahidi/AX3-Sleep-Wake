@@ -1,0 +1,200 @@
+import tensorflow as tf
+from config import project_config as config
+
+
+class CNNModel(tf.keras.Model):
+
+    def __init__(
+            self,
+            down_sample_by=None,
+            name='CNNModel',
+            **kwargs
+            ):
+        super().__init__(name=name, **kwargs)
+        # self.rnn_layer = tf.keras.layers.LSTM(units=16)
+        self.down_sample_by = down_sample_by
+        
+        if self.down_sample_by:
+            self.down_sampler = tf.keras.layers.AveragePooling1D(pool_size=self.down_sample_by, strides=self.down_sample_by)
+            
+        self.input_batch_norm = tf.keras.layers.BatchNormalization()
+
+        # self.lstm_route = [
+        #     tf.keras.layers.LSTM(128, return_sequences=True),
+        #     tf.keras.layers.BatchNormalization(),
+        #     tf.keras.layers.Dropout(0.3),
+        #     tf.keras.layers.LSTM(128),
+        #     tf.keras.layers.BatchNormalization(),
+        #     tf.keras.layers.Dropout(0.3)
+        # ]
+        
+        # ToDo: dropout (for attn) etc.
+
+        self.cnn_route = [
+            tf.keras.layers.Conv1D(filters=128,
+                                   kernel_size=8,
+                                   kernel_initializer='he_uniform', strides=2),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.Activation('relu'),
+            # tf.keras.layers.Dropout(0.3),
+
+            tf.keras.layers.Conv1D(filters=256,
+                                   kernel_size=5,
+                                   kernel_initializer='he_uniform', strides=2),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.Activation('relu'),
+            # tf.keras.layers.Dropout(0.3),
+
+            tf.keras.layers.Conv1D(filters=128,
+                                   kernel_size=3,
+                                   kernel_initializer='he_uniform', strides=2),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.Activation('relu'),
+            # tf.keras.layers.Dropout(0.3),
+        ]
+
+        # TODO: Looks like there is an additional matrix multiplication after (at the end of) attention in the paper (W_o)
+        self.attn = tf.keras.layers.Attention()
+        self.pooling = tf.keras.layers.GlobalAveragePooling1D()
+        self.output_layer = tf.keras.layers.Dense(units=1, activation='sigmoid')
+
+
+    def call(self, inputs):
+        x = inputs['features']
+
+        # Downsampling
+        if self.down_sample_by:
+            assert (config['AX3_freq'] * config['seconds_per_epoch']) % self.down_sample_by == 0, "Epoch length must be a multiple of downsampling rate."
+
+            # x.shape = (Batch Size, Input Length, 3). We're downsampling along axis=1 (input length)
+
+            # x = x[:, ::self.sample_every_n, :]  # Sample every n observation, e.g. 10 will downsample from 100 Hz to 10 Hz
+
+            # Down-sample by averging
+            # This changes x from (batch size, length, n_features)
+            # to (batch size, length // down_sample_by, n_features)
+            # by averaging over a moving
+            x = self.down_sampler(x)
+
+        x = self.input_batch_norm(x)
+
+        # Making copies of the input tensor
+        cnn_signal = tf.identity(x)
+        # lstm_signal = tf.identity(x)
+        
+        # CNN route
+        for layer in self.cnn_route:
+            cnn_signal = layer(cnn_signal)
+        
+        temporal_attn = self.attn([cnn_signal, cnn_signal, cnn_signal])
+
+        cnn_signal = self.pooling(cnn_signal + temporal_attn)  # TODO: The paper weights attn by a scalar
+
+        # lstm_signal = tf.identity(cnn_signal)
+        # # LSTM route
+        # for layer in self.lstm_route:
+        #     lstm_signal = layer(lstm_signal)
+        
+        # cnn_lstm = tf.concat([cnn_signal, lstm_signal], axis=-1)
+
+        output = self.output_layer(cnn_signal)
+
+        return {
+            'epoch_ts': inputs['central_epoch_ts'],
+            'subject_id': inputs['subject_id'],
+            'pred': output
+        }
+
+
+def transformer_encoder(inputs, head_size, num_heads, ff_dim, dropout=0):
+    # Attention and Normalization
+    x = tf.keras.layers.MultiHeadAttention(
+        key_dim=head_size, num_heads=num_heads, dropout=dropout
+    )(inputs, inputs)
+    x = tf.keras.layers.Dropout(dropout)(x)
+    x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x)
+    res = x + inputs
+
+    # Feed Forward Part
+    x = tf.keras.layers.Conv1D(filters=ff_dim, kernel_size=1, activation="relu")(res)
+    x = tf.keras.layers.Dropout(dropout)(x)
+    x = tf.keras.layers.Conv1D(filters=inputs.shape[-1], kernel_size=1)(x)
+    x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x)
+    
+    return x + res
+
+
+class Transformer(tf.keras.Model):
+
+    def __init__(
+            self,
+            # input_shape,
+            head_size,
+            num_heads,
+            ff_dim,
+            num_transformer_blocks,
+            mlp_units,
+            dropout=0,
+            mlp_dropout=0,
+            down_sample_by=None,
+            name='Transformer',
+            **kwargs
+            ):
+        
+        super().__init__(name=name, **kwargs)
+        
+        # self.input_shape = input_shape
+        self.head_size = head_size
+        self.num_heads = num_heads
+        self.ff_dim = ff_dim
+        self.num_transformer_blocks = num_transformer_blocks
+        self.mlp_units = mlp_units
+        self.dropout = dropout
+        self.mlp_dropout = mlp_dropout
+        self.down_sample_by = down_sample_by
+
+        if self.down_sample_by:
+            self.down_sampler = tf.keras.layers.AveragePooling1D(pool_size=self.down_sample_by, strides=self.down_sample_by)
+
+        self.encoder_layers = [
+          tf.keras.layers.TransformerEncoderBlock(
+            num_attention_heads=self.num_heads,
+            inner_dim=self.ff_dim,
+            inner_activation='ReLU'
+            )
+            for _ in range(self.num_transformer_blocks)
+        ]
+
+    def call(self, inputs):
+
+        x = inputs['features']
+
+        # Downsampling
+        if self.down_sample_by:
+            assert (config['AX3_freq'] * config['seconds_per_epoch']) % self.down_sample_by == 0, "Epoch length must be a multiple of downsampling rate."
+
+            # x.shape = (Batch Size, Input Length, 3). We're downsampling along axis=1 (input length)
+
+            # x = x[:, ::self.sample_every_n, :]  # Sample every n observation, e.g. 10 will downsample from 100 Hz to 10 Hz
+
+            # Down-sample by averging
+            # This changes x from (batch size, length, n_features)
+            # to (batch size, length // down_sample_by, n_features)
+            # by averaging over a moving
+            x = self.down_sampler(x)    
+
+        for encoder_layer in self.encoder_layers:
+            x = encoder_layer(x, self.head_size, self.num_heads, self.ff_dim, self.dropout)
+
+        x = tf.keras.layers.GlobalAveragePooling1D(data_format="channels_last")(x)
+        for dim in self.mlp_units:
+            x = tf.keras.layers.Dense(dim, activation="relu")(x)
+            x = tf.keras.layers.Dropout(self.mlp_dropout)(x)
+        
+        output = tf.keras.layers.Dense(1, activation="softmax")(x)
+        
+        return {
+            'epoch_ts': inputs['central_epoch_ts'],
+            'subject_id': inputs['subject_id'],
+            'pred': output
+        }
