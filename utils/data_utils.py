@@ -1,3 +1,4 @@
+from datetime import datetime
 import pandas as pd
 import re
 import os
@@ -32,7 +33,7 @@ def read_PSG_labels(path, subject_id):
     return labels_df
 
 
-def read_AX3_pkl_epoch(path, subject_id, round_timestamps):
+def read_parquet_AX3_epochs(path, subject_id, round_timestamps):
     """
     This function reads Pickle files that contain one record per epoch
     Each key (column) will be a list of values. e.g., X contains 3000 numbers per epoch/record
@@ -42,11 +43,11 @@ def read_AX3_pkl_epoch(path, subject_id, round_timestamps):
     Note: The reason for CWA to PKL and then PKL to Tensorflow is that reading the original
         CWA files is slower than reading Pickles. But Pickles are faster to read
     """
-    filename = f'{path}/AX3_sub_{subject_id:02d}.pkl'
-    with open(filename, 'rb') as f:
-        subject_data = pickle.load(f)
+    filename = f'{path}/AX3_sub_{subject_id:02d}.parquet'
+    subject_data = pd.read_parquet(filename)
 
-    subject_data = subject_data[['epoch_ts', 'X', 'Y', 'Z', 'Temp']]
+    subject_data = subject_data[['subject_id', 'epoch_ts', 'X', 'Y', 'Z', 'Temp']]
+
     # subject_data = subject_data.rename({'Label': 'epoch_ts'}, axis=1)
     # subject_data['epoch_ts'] = subject_data['epoch_ts'].str.strip()
     # subject_data['epoch_ts'] = pd.to_datetime(subject_data['epoch_ts'])
@@ -59,7 +60,7 @@ def read_AX3_pkl_epoch(path, subject_id, round_timestamps):
     return subject_data
 
 
-def read_AX3_cwa(path, subject_id, round_timestamps, freq=config['AX3_freq'], seconds_per_epoch=config['seconds_per_epoch']):
+def read_AX3_cwa(path, subject_id, freq=config['AX3_freq'], seconds_per_epoch=config['seconds_per_epoch']):
 
     rows_per_epoch = freq * seconds_per_epoch
 
@@ -67,7 +68,8 @@ def read_AX3_cwa(path, subject_id, round_timestamps, freq=config['AX3_freq'], se
     subject_files = [filename for filename in cwa_files if filename.find(f'AX3_ALL_{subject_id:03d}') >= 0]
 
     subject_data = pd.DataFrame()
-    for filename in subject_files:
+    for i, filename in enumerate(subject_files):
+        print(f'File {i + 1}:')
         # Reading device data with non-wear detection turned off
         # non-wear detection is not relevant for labelled data, since ground truth is known
         # For unlabelled data (no PSG label) we will compare our epochs to the output of the other
@@ -93,21 +95,62 @@ def read_AX3_cwa(path, subject_id, round_timestamps, freq=config['AX3_freq'], se
     # subject_data['time'] = pd.to_datetime(subject_data['time']).dt.tz_localize(None)  # Remove time zone
     subject_data = subject_data.sort_values('time')
 
+    subject_data.insert(0, 'subject_id', subject_id)  # This is an in place operation
+    
     # This uses index in place of row number. Since we just sorted the data, reseting the index ensures it actually is row number.
-    subject_data['epoch_id'] = subject_data.reset_index(drop=True).index // rows_per_epoch
+    # epoch_id is not used in this function but other functions use it later.
+    subject_data.insert(1, 'epoch_id', subject_data.reset_index(drop=True).index // rows_per_epoch)
 
-    subject_data = subject_data.groupby('epoch_id').agg(
-        epoch_ts=('time', 'min'),
-        X=('x', list),
-        Y=('y', list),
-        Z=('z', list),
-        Temp=('temperature', list),
+    return subject_data
+
+
+def process_AX3_raw_data(df, round_timestamps, normalise_columns=[]):
+
+    # Normalising features
+    for col in normalise_columns:
+        # A very tiny number of observations are Nan in a handful of files
+        # In practice they don't cause an issue. The following mean and std functions
+        # ignore NaNs
+        df[col] = (df[col] - df[col].mean()) / df[col].std()
+        df[col] = df[col].round(4)  # original data also has 4 decimal places
+    
+    # Collecting each epoch into a single row
+    df = df.groupby('epoch_id').agg(
+        subject_id=('subject_id', 'min'),
+        epoch_ts=('epoch_ts', 'min'),
+        X=('X', list),
+        Y=('Y', list),
+        Z=('Z', list),
+        Temp=('Temp', list),
         ).reset_index(drop=True)
     
     if round_timestamps:
         # Timestamps of PSG labels are at 0 and 30 seconds. We need to somehow align these timestamps with those of the labels
-        subject_data['epoch_ts'] = subject_data['epoch_ts'].dt.floor('30s')  # Round down [0, 29] to 0 and [30, 59] to 30
+        df['epoch_ts'] = df['epoch_ts'].dt.floor('30s')  # Round down [0, 29] to 0 and [30, 59] to 30
 
-    subject_data.insert(0, 'subject_id', subject_id)  # This is an in place operation
+    return df
 
-    return subject_data
+
+def read_sleep_dairies(path):
+    sleep_diary_df = pd.DataFrame()
+    for filename in [f for f in os.listdir(path) if f.endswith('csv')]:
+        if filename.find('nap') >= 0:
+            continue
+        df = pd.read_csv(f'{path}/{filename}')
+        sleep_diary_df = pd.concat([sleep_diary_df, df])
+
+    # reading the extra nap diaries
+    nap_df = pd.read_csv(f'{path}/SRCDRI001_Sleep Diary 019-036_nap.csv')
+    nap_df = nap_df.rename(columns={
+        'date_startnap': 'date_gotosleep',
+        'date_endnap': 'date_finalawake',
+        'nap_start': 'gotosleep',
+        'nap_end': 'finalawake'   
+    }).drop(columns=['nap times'])
+    sleep_diary_df = pd.concat([sleep_diary_df, nap_df])
+    sleep_diary_df = sleep_diary_df.sort_values(['participantNo', 'date_gotosleep']).reset_index(drop=True)
+
+    sleep_diary_df['sleep_start'] = pd.to_datetime(sleep_diary_df['date_gotosleep'] + ' ' + sleep_diary_df['gotosleep'])
+    sleep_diary_df['sleep_end'] = pd.to_datetime(sleep_diary_df['date_finalawake'] + ' ' + sleep_diary_df['finalawake'])
+    sleep_diary_df = sleep_diary_df[['participantNo', 'sleep_start', 'sleep_end']]
+    return sleep_diary_df

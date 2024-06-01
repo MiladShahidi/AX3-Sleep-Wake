@@ -16,6 +16,8 @@ from sklearn.metrics import (
 from sklearn.model_selection import KFold
 from utils.training_utils import CustomTensorBoard
 from config import project_config as config
+from models import CNNModel, Transformer
+
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress warnings and debug info mesasages
 
@@ -99,19 +101,21 @@ def reshape_features(context, features):
         return features
 
 
-def create_dataset(path, filters=None, has_labels=True, batch_size=None, repeat=True, shuffle=True):
+def create_dataset(path, compressed=False, filters=None, has_labels=True, batch_size=None, repeat=True, shuffle=True):
     
     if tf.io.gfile.exists(path):  # This means it's either a single file name or a directory, not a pattern
         
         if tf.io.gfile.isdir(path):
-            files = tf.data.Dataset.list_files(f"{path}/*.tfrecord", shuffle=True)
-            dataset = tf.data.TFRecordDataset(files)
+            print("Note: When passing a directory to `create_dataset`, compression will determine which files are included (.gz or not)")
+            extenstion = "tfrecord" + (".gz" if compressed else "")
+            files = tf.data.Dataset.list_files(f"{path}/*.{extenstion}", shuffle=True)
         else:
-            dataset = tf.data.TFRecordDataset(path)
+            files = path
     
     else:  # It must be a pattern like data/sub01_*.tfrecord
         files = tf.data.Dataset.list_files(path, shuffle=True)
-        dataset = tf.data.TFRecordDataset(files)
+
+    dataset = tf.data.TFRecordDataset(files, compression_type='GZIP' if compressed else None)
 
     dataset = dataset.map(partial(parse_tfrecord, has_labels=has_labels)).map(reshape_features)
 
@@ -133,93 +137,6 @@ def create_dataset(path, filters=None, has_labels=True, batch_size=None, repeat=
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
 
     return dataset
-
-
-class SleepModel(tf.keras.Model):
-
-    def __init__(
-            self,
-            sample_every_n=None,
-            name='SleepModel',
-            **kwargs
-            ):
-        super().__init__(name=name, **kwargs)
-        # self.rnn_layer = tf.keras.layers.LSTM(units=16)
-        
-        self.sample_every_n = sample_every_n
-        
-        self.input_batch_norm = tf.keras.layers.BatchNormalization()
-
-        # self.lstm_route = [
-        #     tf.keras.layers.LSTM(32),
-        #     tf.keras.layers.Dropout(0.8)
-        #     ]
-
-        # dropout (for attn) etc.
-        # BatchNorm axis
-
-        self.cnn_route = [
-            tf.keras.layers.Conv1D(filters=64,
-                                   kernel_size=8,
-                                   kernel_initializer='he_uniform', strides=2),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Activation('relu'),
-
-            tf.keras.layers.Conv1D(filters=128,
-                                   kernel_size=5,
-                                   kernel_initializer='he_uniform', strides=2),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Activation('relu'),
-
-            tf.keras.layers.Conv1D(filters=64,
-                                   kernel_size=3,
-                                   kernel_initializer='he_uniform', strides=2),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Activation('relu'),
-        ]
-
-        # TODO: Looks like there is an additional matrix multiplication after (at the end of) attention in the paper (W_o)
-        self.attn = tf.keras.layers.Attention(use_scale=False)
-        self.pooling = tf.keras.layers.GlobalAveragePooling1D()
-        self.output_layer = tf.keras.layers.Dense(units=1, activation='sigmoid')
-
-
-    def call(self, inputs):
-        x = inputs['features']
-
-        # Downsampling
-        if self.sample_every_n:
-            assert (config['AX3_freq'] * config['seconds_per_epoch']) % self.sample_every_n == 0, "Epoch length must be a multiple of downsampling rate."
-            # xyz.shape = (Batch Size, Input Length, 3). We're downsampling along axis=1 (input length)
-            x = x[:, ::self.sample_every_n, :]  # Sample every n observation, e.g. 10 will downsample from 100 Hz to 10 Hz
-
-        x = self.input_batch_norm(x)
-
-        # Making copies of the input tensor
-        cnn_signal = tf.identity(x)
-        # lstm_signal = tf.identity(x)
-        
-        # CNN route
-        for layer in self.cnn_route:
-            cnn_signal = layer(cnn_signal)
-        
-        temporal_attn = self.attn([cnn_signal, cnn_signal, cnn_signal], use_causal_mask=True)
-
-        cnn_signal = self.pooling(cnn_signal + temporal_attn)  # TODO: The paper weights attn by a scalar
-
-        # LSTM route
-        # for layer in self.lstm_route:
-        #     lstm_signal = layer(lstm_signal)
-        
-        # out = tf.concat([cnn_signal, lstm_signal], axis=-1)
-
-        output = self.output_layer(cnn_signal)
-
-        return {
-            'epoch_ts': inputs['central_epoch_ts'],
-            'subject_id': inputs['subject_id'],
-            'pred': output
-        }
 
 
 def drop_subjects(features, labels=None, subject_ids=[]):
@@ -247,7 +164,7 @@ def train_model(
         datapath,
         filters=[
             partial(keep_subjects, subject_ids=train_val_ids),
-            lambda x, y: x['central_epoch_id'] % 5 != 0
+            lambda x, y: x['central_epoch_id'] % 8 != 0
             ],
         batch_size=128
         )
@@ -256,24 +173,35 @@ def train_model(
         datapath,
         filters=[
             partial(keep_subjects, subject_ids=train_val_ids),
-            lambda x, y: x['central_epoch_id'] % 5 == 0
+            lambda x, y: x['central_epoch_id'] % 8 == 0
             ],
         batch_size=100
         )
     
     callbacks = [
         CustomTensorBoard(log_dir=f"{tensorboard_logdir}/{model_nickname}"),
-        tf.keras.callbacks.ReduceLROnPlateau(factor=0.1, patience=10, min_lr=1e-6),
-        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=20, start_from_epoch=30)
+        tf.keras.callbacks.ReduceLROnPlateau(factor=0.1, patience=8, min_lr=1e-6),
+        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=16, start_from_epoch=0)
     ]
     if save_checkpoints:
-        callbacks += [tf.keras.callbacks.ModelCheckpoint(saved_models_dir, monitor='val_loss', save_best_only=True)]
+        callbacks += [tf.keras.callbacks.ModelCheckpoint(f'{saved_models_dir}/{model_nickname}', monitor='val_loss', save_best_only=True)]
 
-    model = SleepModel(sample_every_n=5)
+    # model = CNNModel(down_sample_by=3)
+    model = Transformer(
+        head_size=256,
+        num_heads=4,
+        ff_dim=4,
+        num_transformer_blocks=4,
+        mlp_units=[128],
+        mlp_dropout=0.4,
+        dropout=0.25,
+        down_sample_by=3
+    )
 
     model.compile(
-        optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-3),  # Legacy is because the current one runs slow on M1/M2 macs
+        optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-4),  # Legacy is because the current one runs slow on M1/M2 macs
         loss={'pred': tf.keras.losses.BinaryCrossentropy(name='Loss')},
+        # loss={'pred': tf.keras.losses.BinaryFocalCrossentropy(name='Loss')},
         metrics={'pred': [
             tf.keras.metrics.BinaryAccuracy(name='Accuracy'),
             tf.keras.metrics.Recall(name='Recall'),
@@ -287,10 +215,10 @@ def train_model(
     model.fit(
         train_data,
         # class_weight={0: 0.7, 1: 0.3},
-        epochs=1000,
-        steps_per_epoch=100,
+        epochs=1,
+        steps_per_epoch=1,
         validation_data=val_data,
-        validation_steps=100,
+        validation_steps=1,
         callbacks=callbacks
         )
 
@@ -301,14 +229,12 @@ def train_model(
 
 if __name__ == '__main__':
 
-    datapath = f"data/Tensorflow/normalised/window_{config['window_size']}/labelled"
+    datapath = f"data/Tensorflow/window_{config['window_size']}/labelled"
     psg_labes_path = 'data/PSG-Labels'
     output_dir = 'training_output'
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     performance_output_path = f'{output_dir}/Performance/{timestamp}'
 
-    # all_subject_ids = np.array([id for id in range(1, 29) if id != 27])
-    # all_subject_ids = config['subject_ids']
     all_subject_ids = np.array(config['subject_ids'])
 
     #  Read all PSG labels to compute metrics during CV
@@ -356,7 +282,8 @@ if __name__ == '__main__':
             save_checkpoints=(len(test_ids) == 0)  # Don't save checkpoints during CV
             )
 
-        if len(test_ids) > 0:
+        # if len(test_ids) > 0:
+        if False:
             metrics = {metric_name: [] for metric_name in metric_fns.keys()}  # Placeholder for metric values
 
             test_data = create_dataset(datapath,

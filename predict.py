@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import pandas as pd
-from main import create_dataset
+from train import create_dataset
 from utils.metrics import F1Score, PositiveRate, PredictedPositives
 from config import project_config as config
 import os
@@ -9,13 +9,13 @@ import os
 
 if __name__ == '__main__':
 
-    model_name = 'SleepModel-v0.1'
+    model_name = 'Attn'
     saved_model_path = f'Model Repo/{model_name}'
-    datapath = 'data/Tensorflow/normalised/window_3/unlabelled'
+    datapath = 'data/Tensorflow/window_3/unlabelled'
     pred_output_path = f'Predictions/{model_name}'
 
     os.makedirs(pred_output_path, exist_ok=True)
-    assert len(os.listdir(pred_output_path)) == 0, f"Output directory is not empty."  # Prevents overwriting
+    # assert len(os.listdir(pred_output_path)) == 0, f"Output directory is not empty."  # Prevents overwriting
 
     model = tf.keras.models.load_model(
         saved_model_path,
@@ -26,8 +26,6 @@ if __name__ == '__main__':
         }
     )
 
-    # # # # # # # # # # # # # # # # # # # # # # # # 
-    # # # # # # # ToDo: 16 is empty
     for subject_id in config['subject_ids']:
 
         print(f'Making predictions for subject {subject_id}...')
@@ -35,6 +33,7 @@ if __name__ == '__main__':
         
         test_dataset = create_dataset(
             f"{datapath}/sub_{subject_id:02d}*",
+            compressed=True,  # Unlabelled data is saved with GZIP compression
             has_labels=False,
             repeat=False,
             batch_size=100

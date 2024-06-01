@@ -11,7 +11,7 @@ here = os.path.dirname(__file__)
 sys.path.append(os.path.join(here, '..'))
 
 from utils.data_utils import (
-    read_AX3_pkl_epoch,
+    read_parquet_AX3_epochs,
     read_PSG_labels
 )
 from config import project_config as config
@@ -21,45 +21,10 @@ parent = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(parent)
 
 from utils.tfrecord_utils import pandas_to_tf_seq_example_list, write_to_tfrecord
-
-
-def normalize_ax3_column(df, col, approximate=False):
-    print(f'\tNormalising {col}')
-    # concatenate epoch values to create a long list of numbers
-    if approximate:
-        # This flag helps speed up normalization for large data (unlabelled data is large)
-        # Labelled data has 1200 records per subject and it takes a reasonable amount of time
-        # Each subject has around 28000 unlabelled epochs. A ~5% sample, which is good enough
-        sub_idx = np.random.randint(0, len(df), size=1200)
-        vals = np.array(reduce(lambda x, y: x + y, df.reset_index().iloc[sub_idx][col].values))
-    else:
-        # If not approximate, use all rows
-        vals = np.array(reduce(lambda x, y: x + y, df[col].values))
-
-    m = np.mean(vals)
-    s = np.std(vals)
-    print(f'\tMean: {m}')
-    print(f'\tStd : {s}')
-    
-    def norm(l):
-        np_l = np.array(l)
-        np_l = np.round((np_l - m) / (s + 1e-8), 4)  # original data has 4 decimal places too
-        return list(np_l)  # each row of data is a list. So this returns a list to preserve that format
-    
-    return df[col].apply(norm)
     
 
 def join_features_and_labels(features_df, labels_df):
-    
-    # subject_data = pd.merge(
-    #     left=labels_df,
-    #     right=features_df,
-    #     on='epoch_ts',
-    #     how='left'
-    #     ).sort_values('epoch_ts')
-
-    # unmatched_pct = subject_data['X'].isna().mean()
-    
+        
     subject_data = pd.merge(
         left=features_df,
         right=labels_df,
@@ -74,16 +39,6 @@ def join_features_and_labels(features_df, labels_df):
     unlabelled_df = subject_data[~label_fltr]
 
     return labelled_df, unlabelled_df.drop(columns=['label'])
-
-
-def normalize_measurements(df, columns, approximate=False):
-    for col in columns:
-        if col in df.columns:
-            df[col] = normalize_ax3_column(df, col, approximate)
-        else:
-            print(f' ** WARNING *** : {col} not found in features.')
-
-    return df
 
 
 def create_windowed_df(df, window_size):
@@ -137,12 +92,14 @@ def create_windowed_df(df, window_size):
 
 if __name__ == '__main__':
     
+    WINDOW_SIZE = 1
+
     project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
-    pkl_data_path = f'{project_root}/data/Pickle'
+    parquet_epoch_data_path = f'{project_root}/data/Parquet'
     labels_path = f'{project_root}/data/PSG-Labels'
-    output_path = f"{project_root}/data/Tensorflow/normalised/window_{config['window_size']}"
+    output_path = f"{project_root}/data/Tensorflow/window_{WINDOW_SIZE}"
     
-    # Constant strings for naming stuff
+    # Constants for naming stuff
     LABELLED = 'labelled'
     UNLABELLED = 'unlabelled'
 
@@ -171,15 +128,15 @@ if __name__ == '__main__':
         print(f'Subject ID: {subject_id}')
         print('-' * 20)
 
-        print('Reading Pickled recordings...')
-        features_df = read_AX3_pkl_epoch(pkl_data_path, subject_id, round_timestamps=True)
-        features_df.insert(0, 'subject_id', subject_id)
+        print('Reading Parquet recordings...')
+        features_df = read_parquet_AX3_epochs(parquet_epoch_data_path, subject_id, round_timestamps=True)
 
         print('Reading PSG labels...')
         psg_labels_df = read_PSG_labels(labels_path, subject_id)
 
         print('Joining features and labels...')
         labelled_data, unlabelled_data = join_features_and_labels(features_df, psg_labels_df)
+
         datasets = {
             LABELLED: labelled_data,
             UNLABELLED: unlabelled_data
@@ -189,14 +146,6 @@ if __name__ == '__main__':
             if write_flag[dataset_type]:
                 print(f'Processing {dataset_type} data...')
                 
-                # Since unlabelled data is too large and normalising it takes a long time, we use the "approximate" method
-                print('\tNormalizing features...')
-                datasets[dataset_type] = normalize_measurements(
-                    datasets[dataset_type],
-                    columns=['X', 'Y', 'Z', 'Temp'],
-                    approximate=(dataset_type==UNLABELLED)
-                    )
-
                 print('\tConverting to TFRecords...')
                 datasets[dataset_type]['epoch_ts'] = datasets[dataset_type]['epoch_ts'].astype('str')  # TF Example, etc. don't support datetime
 
@@ -212,7 +161,11 @@ if __name__ == '__main__':
                 datasets[dataset_type] = pandas_to_tf_seq_example_list(datasets[dataset_type], groupby_cols)
 
                 print('\tWriting TFRecords...')
-                write_to_tfrecord(datasets[dataset_type], output_paths[dataset_type], f'sub_{subject_id:02d}', records_per_shard=10000)
+                write_to_tfrecord(datasets[dataset_type],
+                                  output_paths[dataset_type],
+                                  f'sub_{subject_id:02d}',
+                                  compression='GZIP' if dataset_type==UNLABELLED else None,  # Unlabelled files are large. Compressing
+                                  records_per_shard=10000)
 
         print('Took ', datetime.now() - start_time)
         print('*'*80)
