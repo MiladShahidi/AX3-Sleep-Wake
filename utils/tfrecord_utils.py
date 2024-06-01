@@ -18,7 +18,7 @@ def to_feature(value):
         """Returns an `int64_list` from a bool / enum / int / uint."""
         return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
 
-    if isinstance(value, list):
+    if isinstance(value, list) or isinstance(value, np.ndarray):
         sample_value = value[0]
     else:
         sample_value = value
@@ -146,7 +146,7 @@ def pandas_to_tf_seq_example_list(df, group_id_columns):
         for feature_name, feature_value in row_dict.items():
             # Since we receive one row of the results of a groupby operation, each column is a list. That much
             # is certain. However, some columns are a 1-D list while other are nested 2-D lists.
-            if isinstance(feature_value[0], list):  # Examine one value to see whether this is a list or a list of lists
+            if isinstance(feature_value[0], list) or isinstance(feature_value[0], np.ndarray):  # Examine one value to see whether this is a list or a list of lists
                 sequence_features_dict[feature_name] = feature_value
             else:
                 context_features_dict[feature_name] = feature_value
@@ -175,7 +175,7 @@ def pandas_to_tf_seq_example_list(df, group_id_columns):
     return collected_df.apply(to_tf_seq_example, axis=1).to_list()
 
 
-def write_to_tfrecord(data, path, filename_prefix, records_per_shard=10 ** 4):
+def write_to_tfrecord(data, path, filename_prefix, compression, records_per_shard=10 ** 4):
     """
     Writes a list of `tf.Example's or `tf.SequenceExample`s to tfrecord file(s).
 
@@ -240,8 +240,14 @@ def write_to_tfrecord(data, path, filename_prefix, records_per_shard=10 ** 4):
     for i, (shard_start, shard_end) in enumerate(zip(shard_boundaries, shard_boundaries[1:])):
         os.makedirs(path, exist_ok=True)
         shard_numbering = f'_{i+1}_of_{num_shards}' if num_shards > 1 else ''
+        
         filename = filename_prefix + shard_numbering + '.tfrecord'
+        if compression:
+            filename += '.gz'
+        
         filename = os.path.join(path, filename)
-        with tf.io.TFRecordWriter(filename) as writer:
+        
+        write_options = tf.io.TFRecordOptions(compression_type=compression)
+        with tf.io.TFRecordWriter(filename, options=write_options) as writer:
             for record in data[shard_start:shard_end]:
                 writer.write(record.SerializeToString())

@@ -2,6 +2,9 @@ Average for downsampling instead of 1 out of n
 
 Pad the first and the last epochs when creating windows
 
-input batch_norm?
+Address gaps (long periods of missing epochs) when filtering output
 
-Nans in measurements: 16, 31 (temp)
+Plots:
+    Add predictions for labelled data (from CV?) to plots
+    Create a csv containing start and end dates for each subject and only plot epochs in between
+
