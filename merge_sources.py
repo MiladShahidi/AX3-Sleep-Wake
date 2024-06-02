@@ -6,14 +6,13 @@ import os
 if __name__ == '__main__':
 
     output_path = f'Results/merged_sources'
+    aws_labels_path = 'data/AWS-Labels'
+    pred_path = 'Predictions/Attn'
+    biobank_pred_path = 'data/Toolbox Outputs/Timeseries (predictions)'
 
     os.makedirs(output_path, exist_ok=True)
 
     for id in config['subject_ids']:
-
-        aws_labels_path = 'data/AWS-Labels'
-        pred_path = 'Predictions/Attn'
-        biobank_pred_path = 'data/Toolbox Outputs/Timeseries (predictions)'
 
         # AWS
         aws_df = pd.read_csv(f'{aws_labels_path}/mesa-sleep-{id:04d}_Date_time.csv')

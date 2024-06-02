@@ -1,5 +1,6 @@
 import tensorflow as tf
 from config import project_config as config
+import numpy as np
 
 
 class CNNModel(tf.keras.Model):
@@ -54,7 +55,13 @@ class CNNModel(tf.keras.Model):
         ]
 
         # TODO: Looks like there is an additional matrix multiplication after (at the end of) attention in the paper (W_o)
-        self.attn = tf.keras.layers.Attention()
+        self.attn = tf.keras.layers.MultiHeadAttention(
+            num_heads=4,
+            key_dim=32,  # head size
+            dropout=0.25
+        )
+
+        # self.attn = tf.keras.layers.Attention()
         self.pooling = tf.keras.layers.GlobalAveragePooling1D()
         self.output_layer = tf.keras.layers.Dense(units=1, activation='sigmoid')
 
@@ -86,7 +93,8 @@ class CNNModel(tf.keras.Model):
         for layer in self.cnn_route:
             cnn_signal = layer(cnn_signal)
         
-        temporal_attn = self.attn([cnn_signal, cnn_signal, cnn_signal])
+        temporal_attn = self.attn(cnn_signal, cnn_signal)
+
 
         cnn_signal = self.pooling(cnn_signal + temporal_attn)  # TODO: The paper weights attn by a scalar
 
@@ -106,22 +114,55 @@ class CNNModel(tf.keras.Model):
         }
 
 
-def transformer_encoder(inputs, head_size, num_heads, ff_dim, dropout=0):
-    # Attention and Normalization
-    x = tf.keras.layers.MultiHeadAttention(
-        key_dim=head_size, num_heads=num_heads, dropout=dropout
-    )(inputs, inputs)
-    x = tf.keras.layers.Dropout(dropout)(x)
-    x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x)
-    res = x + inputs
+class EncoderBlock(tf.keras.layers.Layer):
+    def __init__(
+            self,
+            d_model,
+            head_size,
+            num_heads,
+            ff_dim,
+            dropout=0,
+            name='Transformer',
+            **kwargs
+            ):
+        
+        super().__init__(name=name, **kwargs)    
 
-    # Feed Forward Part
-    x = tf.keras.layers.Conv1D(filters=ff_dim, kernel_size=1, activation="relu")(res)
-    x = tf.keras.layers.Dropout(dropout)(x)
-    x = tf.keras.layers.Conv1D(filters=inputs.shape[-1], kernel_size=1)(x)
-    x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x)
+        self.head_size = head_size
+        self.num_heads = num_heads
+        self.ff_dim = ff_dim
+        self.dropout = dropout
+        self.d_model = d_model
+
+        self.multihead_attention = tf.keras.layers.MultiHeadAttention(
+            key_dim=self.head_size,
+            num_heads=self.num_heads,
+            dropout=self.dropout
+        )
+        self.attn_dropout = tf.keras.layers.Dropout(self.dropout)
+        self.attn_layer_norm = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+
+        self.feed_forward_layers = [
+            tf.keras.layers.Conv1D(filters=self.ff_dim, kernel_size=1, activation="relu"),
+            tf.keras.layers.Dropout(self.dropout),
+            tf.keras.layers.Conv1D(filters=self.d_model, kernel_size=1),
+            tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        ]
     
-    return x + res
+    def call(self, inputs):
+        # from: https://keras.io/examples/timeseries/timeseries_classification_transformer/
+        # Attention and Normalization
+        x = self.multihead_attention(inputs, inputs)
+        x = self.attn_dropout(x)
+        x = self.attn_layer_norm(x)
+        res = x + inputs
+
+        # Feed Forward Part
+        y = tf.identity(res)
+        for ff_layer in self.feed_forward_layers:
+            y = ff_layer(y)
+        
+        return y + res
 
 
 class Transformer(tf.keras.Model):
@@ -129,6 +170,7 @@ class Transformer(tf.keras.Model):
     def __init__(
             self,
             # input_shape,
+            d_model,
             head_size,
             num_heads,
             ff_dim,
@@ -152,18 +194,30 @@ class Transformer(tf.keras.Model):
         self.dropout = dropout
         self.mlp_dropout = mlp_dropout
         self.down_sample_by = down_sample_by
+        self.d_model = d_model
 
         if self.down_sample_by:
             self.down_sampler = tf.keras.layers.AveragePooling1D(pool_size=self.down_sample_by, strides=self.down_sample_by)
 
         self.encoder_layers = [
-          tf.keras.layers.TransformerEncoderBlock(
-            num_attention_heads=self.num_heads,
-            inner_dim=self.ff_dim,
-            inner_activation='ReLU'
-            )
-            for _ in range(self.num_transformer_blocks)
+            EncoderBlock(
+                head_size=self.head_size,
+                d_model=self.d_model,
+                num_heads=self.num_heads,
+                ff_dim=self.ff_dim,
+                dropout=self.dropout
+                )
+                for _ in range(self.num_transformer_blocks)
         ]
+
+        self.average_pooling = tf.keras.layers.GlobalAveragePooling1D(data_format="channels_last")
+        
+        self.mlp_layers = []
+        for dim in self.mlp_units:
+            self.mlp_layers.append(tf.keras.layers.Dense(dim, activation="relu"))
+            self.mlp_layers.append(tf.keras.layers.Dropout(self.mlp_dropout))
+        
+        self.output_layer = tf.keras.layers.Dense(1, activation="sigmoid")
 
     def call(self, inputs):
 
@@ -184,17 +238,41 @@ class Transformer(tf.keras.Model):
             x = self.down_sampler(x)    
 
         for encoder_layer in self.encoder_layers:
-            x = encoder_layer(x, self.head_size, self.num_heads, self.ff_dim, self.dropout)
+            x = encoder_layer(x)
 
-        x = tf.keras.layers.GlobalAveragePooling1D(data_format="channels_last")(x)
-        for dim in self.mlp_units:
-            x = tf.keras.layers.Dense(dim, activation="relu")(x)
-            x = tf.keras.layers.Dropout(self.mlp_dropout)(x)
+        x = self.average_pooling(x)
+
+        for layer in self.mlp_layers:
+            x = layer(x)
         
-        output = tf.keras.layers.Dense(1, activation="softmax")(x)
+        output = self.output_layer(x)
         
         return {
             'epoch_ts': inputs['central_epoch_ts'],
             'subject_id': inputs['subject_id'],
             'pred': output
         }
+
+
+if __name__ == '__main__':
+    x = tf.constant(np.random.random((2, 100, 5)))
+
+    model = Transformer(
+        head_size=256,
+        d_model=5,  # num of variables
+        num_heads=4,
+        ff_dim=4,
+        num_transformer_blocks=4,
+        mlp_units=[128],
+        mlp_dropout=0.4,
+        dropout=0.25,
+        down_sample_by=3
+    )
+
+    input = {
+        'features': x,
+        'central_epoch_ts': 1,
+        'subject_id': 1
+    }
+    
+    print(model(input))
