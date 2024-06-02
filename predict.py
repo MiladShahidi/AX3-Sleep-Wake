@@ -41,7 +41,12 @@ if __name__ == '__main__':
 
         pred_df = model.predict(test_dataset)
 
-        pred_df['pred'] = np.round(np.squeeze(pred_df['pred']))  # Threshold = 0.5
+        # pred_df['pred'] = np.round(np.squeeze(pred_df['pred']))  # Threshold = 0.5
+        
+        threshold = 0.6  # Threshold for classifying as 0 or 1
+        pred_score = np.squeeze(pred_df['pred'])
+        pred_df['pred'] = np.round(pred_score * (0.5 / threshold))
+
         pred_df = pd.DataFrame(pred_df)
         pred_df = pred_df[['subject_id', 'epoch_ts', 'pred']]  # Order of columns is not guaranteed. Reordering.
 

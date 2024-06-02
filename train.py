@@ -186,20 +186,21 @@ def train_model(
     if save_checkpoints:
         callbacks += [tf.keras.callbacks.ModelCheckpoint(f'{saved_models_dir}/{model_nickname}', monitor='val_loss', save_best_only=True)]
 
-    # model = CNNModel(down_sample_by=3)
-    model = Transformer(
-        head_size=256,
-        num_heads=4,
-        ff_dim=4,
-        num_transformer_blocks=4,
-        mlp_units=[128],
-        mlp_dropout=0.4,
-        dropout=0.25,
-        down_sample_by=3
-    )
+    model = CNNModel(down_sample_by=3)
+    # model = Transformer(
+    #     head_size=32,
+    #     d_model=5,  # num of variables
+    #     num_heads=4,
+    #     ff_dim=4,
+    #     num_transformer_blocks=1,
+    #     mlp_units=[128],
+    #     mlp_dropout=0.4,
+    #     dropout=0.25,
+    #     down_sample_by=3
+    # )
 
     model.compile(
-        optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-4),  # Legacy is because the current one runs slow on M1/M2 macs
+        optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-3),  # Legacy is because the current one runs slow on M1/M2 macs
         loss={'pred': tf.keras.losses.BinaryCrossentropy(name='Loss')},
         # loss={'pred': tf.keras.losses.BinaryFocalCrossentropy(name='Loss')},
         metrics={'pred': [
@@ -214,11 +215,11 @@ def train_model(
 
     model.fit(
         train_data,
-        # class_weight={0: 0.7, 1: 0.3},
-        epochs=1,
-        steps_per_epoch=1,
+        class_weight={0: 0.6, 1: 0.4},
+        epochs=1000,
+        steps_per_epoch=100,
         validation_data=val_data,
-        validation_steps=1,
+        validation_steps=50,
         callbacks=callbacks
         )
 
@@ -234,6 +235,10 @@ if __name__ == '__main__':
     output_dir = 'training_output'
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     performance_output_path = f'{output_dir}/Performance/{timestamp}'
+
+    print('*'*20)
+    print(f'Model Ttimestamp: {timestamp}')
+    print('*'*20)
 
     all_subject_ids = np.array(config['subject_ids'])
 
