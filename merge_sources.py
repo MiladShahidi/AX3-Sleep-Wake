@@ -64,5 +64,4 @@ if __name__ == '__main__':
             how='left'
             ).drop(columns=['time_in_minutes'])
         
-        
         joint_df.to_csv(f'{output_path}/sub_{id:02d}.csv', index=False)

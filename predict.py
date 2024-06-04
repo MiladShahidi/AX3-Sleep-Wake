@@ -43,23 +43,23 @@ if __name__ == '__main__':
 
         # pred_df['pred'] = np.round(np.squeeze(pred_df['pred']))  # Threshold = 0.5
         
-        threshold = 0.6  # Threshold for classifying as 0 or 1
+        threshold = 0.5  # Threshold for classifying as 0 or 1
         pred_score = np.squeeze(pred_df['pred'])
+        pred_df['pred_score'] = pred_score
         pred_df['pred'] = np.round(pred_score * (0.5 / threshold))
 
+        for k, v in pred_df.items():
+            print(f'{k}: {len(v)}')
+            print(v)
+
         pred_df = pd.DataFrame(pred_df)
-        pred_df = pred_df[['subject_id', 'epoch_ts', 'pred']]  # Order of columns is not guaranteed. Reordering.
+        pred_df = pred_df[['subject_id', 'epoch_ts', 'pred', 'pred_score']]  # Order of columns is not guaranteed. Reordering.
 
         pred_df['epoch_ts'] = pd.to_datetime(pred_df['epoch_ts'].str.decode("utf-8"))
         pred_df = pred_df.sort_values('epoch_ts')
 
         print(f'Made predictions for {len(pred_df)} epochs.')
         
-        print('Sample output:')
-        print('-' * 20)
-        print(pred_df.head())
-        print('-' * 20)
-
         output_filename = f"{pred_output_path}/sub_{subject_id:02d}.csv"
         print(f'Saving to {output_filename}')
         pred_df.to_csv(output_filename, index=False)

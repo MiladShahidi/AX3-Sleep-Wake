@@ -55,10 +55,10 @@ class CNNModel(tf.keras.Model):
         ]
 
         # TODO: Looks like there is an additional matrix multiplication after (at the end of) attention in the paper (W_o)
-        self.attn = tf.keras.layers.MultiHeadAttention(
+        self.multi_attn = tf.keras.layers.MultiHeadAttention(
             num_heads=4,
             key_dim=32,  # head size
-            dropout=0.25
+            dropout=0.1
         )
 
         # self.attn = tf.keras.layers.Attention()
@@ -93,8 +93,8 @@ class CNNModel(tf.keras.Model):
         for layer in self.cnn_route:
             cnn_signal = layer(cnn_signal)
         
-        temporal_attn = self.attn(cnn_signal, cnn_signal)
-
+        # temporal_attn = self.attn([cnn_signal, cnn_signal, cnn_signal])
+        temporal_attn = self.multi_attn(cnn_signal, cnn_signal, cnn_signal)
 
         cnn_signal = self.pooling(cnn_signal + temporal_attn)  # TODO: The paper weights attn by a scalar
 
