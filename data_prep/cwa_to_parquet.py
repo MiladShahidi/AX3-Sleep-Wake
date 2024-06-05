@@ -37,6 +37,7 @@ if __name__ == '__main__':
             'z': 'Z',
             'temperature': 'Temp'
         })
+
         features_df = process_AX3_raw_data(features_df,
                                            normalise_columns=['X', 'Y', 'Z', 'Temp'],
                                            round_timestamps=False)

@@ -9,10 +9,10 @@ import os
 
 if __name__ == '__main__':
 
-    model_name = 'Attn'
+    model_name = 'AWS-CNN'
     saved_model_path = f'Model Repo/{model_name}'
     datapath = 'data/Tensorflow/window_3/unlabelled'
-    pred_output_path = f'Predictions/{model_name}'
+    pred_output_path = f'Results/Predictions/{model_name}'
 
     os.makedirs(pred_output_path, exist_ok=True)
     # assert len(os.listdir(pred_output_path)) == 0, f"Output directory is not empty."  # Prevents overwriting
@@ -43,8 +43,9 @@ if __name__ == '__main__':
 
         # pred_df['pred'] = np.round(np.squeeze(pred_df['pred']))  # Threshold = 0.5
         
-        threshold = 0.6  # Threshold for classifying as 0 or 1
+        threshold = 0.5  # Threshold for classifying as 0 or 1
         pred_score = np.squeeze(pred_df['pred'])
+        # pred_df['pred_score'] = pred_score
         pred_df['pred'] = np.round(pred_score * (0.5 / threshold))
 
         pred_df = pd.DataFrame(pred_df)
@@ -55,11 +56,6 @@ if __name__ == '__main__':
 
         print(f'Made predictions for {len(pred_df)} epochs.')
         
-        print('Sample output:')
-        print('-' * 20)
-        print(pred_df.head())
-        print('-' * 20)
-
         output_filename = f"{pred_output_path}/sub_{subject_id:02d}.csv"
         print(f'Saving to {output_filename}')
         pred_df.to_csv(output_filename, index=False)

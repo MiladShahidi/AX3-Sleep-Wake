@@ -16,7 +16,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import KFold
 from utils.training_utils import CustomTensorBoard
 from config import project_config as config
-from models import CNNModel, Transformer
+from models import CNNModel, Transformer, NewCNNModel
 
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress warnings and debug info mesasages
@@ -73,6 +73,10 @@ def reshape_features(context, features):
     # axis=-1 means last one. This is the axis we just created above.
     # This finds the L2 norm over the X-Y-Z axis
     triaxial_l2_norm = tf.norm(xyz, ord=2, axis=-1, keepdims=True)  # L2 Norm
+    
+    norm_diff = triaxial_l2_norm[:, 1:, :] - triaxial_l2_norm[:, :-1, :]
+    # [[0, 0], [1, 0], [0, 0]] means only insert 1 pad in axis=1 and before the values
+    norm_diff = tf.pad(norm_diff, [[0, 0], [1, 0], [0, 0]])  # pad the diff at t=0 to make it the same shape again
 
     feature_list = [
         tf.expand_dims(features['X'], axis=-1),
@@ -80,16 +84,18 @@ def reshape_features(context, features):
         tf.expand_dims(features['Z'], axis=-1),
         tf.expand_dims(features['Temp'], axis=-1),
         triaxial_l2_norm,
+        # tf.abs(norm_diff)
     ]
 
     stacked_features = tf.concat(feature_list, axis=-1)
     
-    # stacked_features.shape is (win_size, epoch len, n_sequences)
+    # stacked_features.shape is (window_size, epoch len, n_sequences)
     # Below, we combine the first two dimensions, i.e. concatenate all epochs in the window
     # And make it (win_size * epoch len, n_sequences)
     n_sequences = len(feature_list)
     seq_features = {
-        'features': tf.reshape(stacked_features, (-1, n_sequences)),
+        # 'features': stacked_features  # not reshaping
+        'features': tf.reshape(stacked_features, (-1, n_sequences))
     }
         
     if 'label' in context:
@@ -180,13 +186,14 @@ def train_model(
     
     callbacks = [
         CustomTensorBoard(log_dir=f"{tensorboard_logdir}/{model_nickname}"),
-        tf.keras.callbacks.ReduceLROnPlateau(factor=0.1, patience=8, min_lr=1e-6),
-        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=16, start_from_epoch=0)
+        tf.keras.callbacks.ReduceLROnPlateau(factor=np.sqrt(0.1), patience=5, min_lr=1e-6),
+        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=15, start_from_epoch=0)
     ]
     if save_checkpoints:
         callbacks += [tf.keras.callbacks.ModelCheckpoint(f'{saved_models_dir}/{model_nickname}', monitor='val_loss', save_best_only=True)]
 
-    model = CNNModel(down_sample_by=3)
+    # model = NewCNNModel(down_sample_by=5, window_size=3)
+    model = CNNModel(down_sample_by=5)
     # model = Transformer(
     #     head_size=32,
     #     d_model=5,  # num of variables
@@ -208,14 +215,14 @@ def train_model(
             tf.keras.metrics.Recall(name='Recall'),
             tf.keras.metrics.Precision(name='Precision'),
             F1Score(name='F1Score'),
-            # PositiveRate(name='PositiveRate'),
-            # PredictedPositives(name='PredictedPositives')
+            PositiveRate(name='PositiveRate'),
+            PredictedPositives(name='PredictedPositives')
             ]}
             )
 
     model.fit(
         train_data,
-        class_weight={0: 0.6, 1: 0.4},
+        # class_weight={0: 0.6, 1: 0.4},
         epochs=1000,
         steps_per_epoch=100,
         validation_data=val_data,
@@ -230,14 +237,14 @@ def train_model(
 
 if __name__ == '__main__':
 
-    datapath = f"data/Tensorflow/window_{config['window_size']}/labelled"
-    psg_labes_path = 'data/PSG-Labels'
+    datapath = f"data/Tensorflow/AWS/window_{config['window_size']}/labelled"
+    psg_labels_path = 'data/PSG-Labels'
     output_dir = 'training_output'
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     performance_output_path = f'{output_dir}/Performance/{timestamp}'
 
     print('*'*20)
-    print(f'Model Ttimestamp: {timestamp}')
+    print(f'Model Timestamp: {timestamp}')
     print('*'*20)
 
     all_subject_ids = np.array(config['subject_ids'])
@@ -245,7 +252,7 @@ if __name__ == '__main__':
     #  Read all PSG labels to compute metrics during CV
     psg_labels = pd.DataFrame()
     for id in all_subject_ids:
-        subject_labels = read_PSG_labels(psg_labes_path, id)
+        subject_labels = read_PSG_labels(psg_labels_path, id)
         subject_labels.insert(0, 'subject_id', id)
         psg_labels = pd.concat([psg_labels, subject_labels])
 
