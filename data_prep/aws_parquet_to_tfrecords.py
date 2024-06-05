@@ -12,6 +12,7 @@ sys.path.append(os.path.join(here, '..'))
 
 from utils.data_utils import (
     read_parquet_AX3_epochs,
+    read_AWS_labels,
     read_PSG_labels
 )
 from config import project_config as config
@@ -33,12 +34,15 @@ def join_features_and_labels(features_df, labels_df):
         how='left'
         ).sort_values('epoch_ts')
 
-    label_fltr = ~subject_data['label'].isna()
+    label_fltr = ~subject_data['PSG Sleep'].isna()  # label means psg here
     
+    # even though in some scenarios we use AWS as training label, we still want to split based on wether or not
+    # an epoch has PSG (and not AWS) labels. This is for the sake of consistency.
+    # That is, training hours are always PSG-labelled hours, or "lab-hours", regardless of which source is used for training labels.
     labelled_df = subject_data[label_fltr]
     unlabelled_df = subject_data[~label_fltr]
 
-    return labelled_df, unlabelled_df.drop(columns=['label'])
+    return labelled_df, unlabelled_df.drop(columns=['PSG Sleep', 'AWS Sleep'])
 
 
 def create_windowed_df(df, window_size):
@@ -92,12 +96,13 @@ def create_windowed_df(df, window_size):
 
 if __name__ == '__main__':
     
-    WINDOW_SIZE = 19
+    WINDOW_SIZE = 1
 
     project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
     parquet_epoch_data_path = f'{project_root}/data/Parquet'
-    labels_path = f'{project_root}/data/PSG-Labels'
-    output_path = f"{project_root}/data/Tensorflow/window_{WINDOW_SIZE}"
+    aws_labels_path = f'{project_root}/data/AWS-Labels'
+    psg_labels_path = f'{project_root}/data/PSG-Labels'
+    output_path = f"{project_root}/data/Tensorflow/AWS/window_{WINDOW_SIZE}"
     
     # Constants for naming stuff
     LABELLED = 'labelled'
@@ -130,12 +135,36 @@ if __name__ == '__main__':
         print('Reading Parquet recordings...')
         features_df = read_parquet_AX3_epochs(parquet_epoch_data_path, subject_id, round_timestamps=True)
 
-        print('Reading PSG labels...')
-        psg_labels_df = read_PSG_labels(labels_path, subject_id)
-        psg_labels_df = psg_labels_df.rename(columns={'PSG Sleep': 'label'})
+        print('Reading labels...')
+        aws_labels_df = read_AWS_labels(aws_labels_path, subject_id)
+        aws_labels_df.insert(0, 'subject_id', subject_id)
+        psg_labels_df = read_PSG_labels(psg_labels_path, subject_id)
+        psg_labels_df.insert(0, 'subject_id', subject_id)
+        
+        # We have two sets of labels: PSG and AWS. PSG is available only for "lab hours" (about 10 hours per person)
+        # AWS is available for all days. AWS is whay we will evaluate our performance against
+        # But for training, we can train on either. Here we read in both, split the data (when joining with features)
+        # into labelled (hours when PSG is available, aka lab hours) and unlabelled
+        # And also decide which label to use for training, i.e. which one to write into training data files
+        
+        # AWS only has 1 label per minute. We need to join on minute-by-minute time
+        # Each AWS (1-minute long) epoch will match two (30-second long) PSG epoch
+        psg_labels_df['time_in_minutes'] = psg_labels_df['epoch_ts'].dt.floor('min')
+        labels_df = pd.merge(
+            left=psg_labels_df,
+            right=aws_labels_df,
+            left_on=['subject_id', 'time_in_minutes'],
+            right_on=['subject_id', 'AWS time'],
+            how='inner'
+        )
+        labels_df = labels_df[['epoch_ts', 'PSG Sleep', 'AWS Sleep']]
 
         print('Joining features and labels...')
-        labelled_data, unlabelled_data = join_features_and_labels(features_df, psg_labels_df)
+        labelled_data, unlabelled_data = join_features_and_labels(features_df, labels_df)
+
+        # Here we decide which label to keep for training. We drop one and rename the other to "label"
+        labelled_data = labelled_data.drop(['PSG Sleep'], axis=1)
+        labelled_data = labelled_data.rename(columns={'AWS Sleep': 'label'})
 
         datasets = {
             LABELLED: labelled_data,

@@ -16,7 +16,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import KFold
 from utils.training_utils import CustomTensorBoard
 from config import project_config as config
-from models import CNNModel, Transformer
+from models import CNNModel, Transformer, NewCNNModel
 
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress warnings and debug info mesasages
@@ -94,7 +94,8 @@ def reshape_features(context, features):
     # And make it (win_size * epoch len, n_sequences)
     n_sequences = len(feature_list)
     seq_features = {
-        'features': tf.reshape(stacked_features, (-1, n_sequences)),
+        # 'features': stacked_features  # not reshaping
+        'features': tf.reshape(stacked_features, (-1, n_sequences))
     }
         
     if 'label' in context:
@@ -185,13 +186,14 @@ def train_model(
     
     callbacks = [
         CustomTensorBoard(log_dir=f"{tensorboard_logdir}/{model_nickname}"),
-        tf.keras.callbacks.ReduceLROnPlateau(factor=0.1, patience=8, min_lr=1e-6),
-        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=16, start_from_epoch=0)
+        tf.keras.callbacks.ReduceLROnPlateau(factor=np.sqrt(0.1), patience=5, min_lr=1e-6),
+        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=15, start_from_epoch=0)
     ]
     if save_checkpoints:
         callbacks += [tf.keras.callbacks.ModelCheckpoint(f'{saved_models_dir}/{model_nickname}', monitor='val_loss', save_best_only=True)]
 
-    model = CNNModel(down_sample_by=3)
+    # model = NewCNNModel(down_sample_by=5, window_size=3)
+    model = CNNModel(down_sample_by=5)
     # model = Transformer(
     #     head_size=32,
     #     d_model=5,  # num of variables
@@ -235,8 +237,8 @@ def train_model(
 
 if __name__ == '__main__':
 
-    datapath = f"data/Tensorflow/window_{config['window_size']}/labelled"
-    psg_labes_path = 'data/PSG-Labels'
+    datapath = f"data/Tensorflow/AWS/window_{config['window_size']}/labelled"
+    psg_labels_path = 'data/PSG-Labels'
     output_dir = 'training_output'
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     performance_output_path = f'{output_dir}/Performance/{timestamp}'
@@ -250,7 +252,7 @@ if __name__ == '__main__':
     #  Read all PSG labels to compute metrics during CV
     psg_labels = pd.DataFrame()
     for id in all_subject_ids:
-        subject_labels = read_PSG_labels(psg_labes_path, id)
+        subject_labels = read_PSG_labels(psg_labels_path, id)
         subject_labels.insert(0, 'subject_id', id)
         psg_labels = pd.concat([psg_labels, subject_labels])
 
