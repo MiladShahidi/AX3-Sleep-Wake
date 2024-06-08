@@ -192,29 +192,19 @@ def train_model(
     if save_checkpoints:
         callbacks += [tf.keras.callbacks.ModelCheckpoint(f'{saved_models_dir}/{model_nickname}', monitor='val_loss', save_best_only=True)]
 
-    # model = NewCNNModel(down_sample_by=5, window_size=3)
-    model = CNNModel(down_sample_by=5)
-    # model = Transformer(
-    #     head_size=32,
-    #     d_model=5,  # num of variables
-    #     num_heads=4,
-    #     ff_dim=4,
-    #     num_transformer_blocks=1,
-    #     mlp_units=[128],
-    #     mlp_dropout=0.4,
-    #     dropout=0.25,
-    #     down_sample_by=3
-    # )
+    # model = NewCNNModel(down_sample_by=60, window_size=config['window_size'])
+    model = CNNModel(down_sample_by=60)
 
     model.compile(
         optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-3),  # Legacy is because the current one runs slow on M1/M2 macs
         loss={'pred': tf.keras.losses.BinaryCrossentropy(name='Loss')},
         # loss={'pred': tf.keras.losses.BinaryFocalCrossentropy(name='Loss')},
         metrics={'pred': [
-            tf.keras.metrics.BinaryAccuracy(name='Accuracy'),
+            # tf.keras.metrics.BinaryAccuracy(name='Accuracy'),
             tf.keras.metrics.Recall(name='Recall'),
             tf.keras.metrics.Precision(name='Precision'),
-            F1Score(name='F1Score'),
+            F1Score(average='macro'),
+            F1Score(average='binary'),
             PositiveRate(name='PositiveRate'),
             PredictedPositives(name='PredictedPositives')
             ]}
@@ -237,11 +227,11 @@ def train_model(
 
 if __name__ == '__main__':
 
-    datapath = f"data/Tensorflow/AWS/window_{config['window_size']}/labelled"
+    datapath = f"data/Tensorflow/window_{config['window_size']}/labelled"
     psg_labels_path = 'data/PSG-Labels'
     output_dir = 'training_output'
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    performance_output_path = f'{output_dir}/Performance/{timestamp}'
+    cv_preds_path = f'Results/Predictions/CV/{timestamp}'
 
     print('*'*20)
     print(f'Model Timestamp: {timestamp}')
@@ -264,14 +254,14 @@ if __name__ == '__main__':
         'Specificity': lambda y_true, y_pred: classification_report(y_true=y_true, y_pred=y_pred, output_dict=True, labels=[0, 1])['0']['precision']
     }
 
-    os.makedirs(performance_output_path)
+    os.makedirs(cv_preds_path)
     
     kfold_splitter = KFold(config['n_cv_folds'])
 
     metrics_df = pd.DataFrame()
 
-    # for fold_number, (train_index, test_index) in enumerate(kfold_splitter.split(all_subject_ids)):
-    for fold_number, (train_index, test_index) in enumerate([(np.arange(0, len(all_subject_ids)), [])]):  # For training on all subjects
+    for fold_number, (train_index, test_index) in enumerate(kfold_splitter.split(all_subject_ids)):
+    # for fold_number, (train_index, test_index) in enumerate([(np.arange(0, len(all_subject_ids)), [])]):  # For training on all subjects
 
         train_val_ids = all_subject_ids[train_index]
         test_ids = all_subject_ids[test_index]
@@ -291,11 +281,12 @@ if __name__ == '__main__':
             train_val_ids=train_val_ids,
             output_dir=output_dir,
             model_nickname=model_nickname,
-            save_checkpoints=(len(test_ids) == 0)  # Don't save checkpoints during CV
+            save_checkpoints=True
+            # save_checkpoints=(len(test_ids) == 0)  # Don't save checkpoints during CV
             )
 
-        # if len(test_ids) > 0:
-        if False:
+        if len(test_ids) > 0:
+        # if False:
             metrics = {metric_name: [] for metric_name in metric_fns.keys()}  # Placeholder for metric values
 
             test_data = create_dataset(datapath,
@@ -320,16 +311,16 @@ if __name__ == '__main__':
             print('^*'*40)
             labels_pred_df = labels_pred_df.dropna()  # ToDo: Fix windowing for the first and last epochs so we won't have to dropna here
 
-            labels_pred_df.to_csv(f'{performance_output_path}/preds_fold_{fold_number:02d}_{model_nickname}.csv', index=False)
+            labels_pred_df.to_csv(f'{cv_preds_path}/{model_nickname}.csv', index=False)
             
-            for metric_name, metric_fn in metric_fns.items():
-                metric_value = metric_fn(y_pred=labels_pred_df['pred'], y_true=labels_pred_df['label'])
-                metrics[metric_name].append(round(metric_value * 100, 2))
+            # for metric_name, metric_fn in metric_fns.items():
+            #     metric_value = metric_fn(y_pred=labels_pred_df['pred'], y_true=labels_pred_df['label'])
+            #     metrics[metric_name].append(round(metric_value * 100, 2))
             
-            fold_metrics = pd.DataFrame(metrics)
-            fold_metrics.insert(0, 'Fold', fold_number)
-            fold_metrics.insert(1, 'Test Subjects', f"{np.min(test_ids):02d} to {np.max(test_ids):02d}")
+            # fold_metrics = pd.DataFrame(metrics)
+            # fold_metrics.insert(0, 'Fold', fold_number)
+            # fold_metrics.insert(1, 'Test Subjects', f"{np.min(test_ids):02d} to {np.max(test_ids):02d}")
 
-            metrics_df = pd.concat([metrics_df, fold_metrics])
+            # metrics_df = pd.concat([metrics_df, fold_metrics])
 
-            metrics_df.to_csv(f'{performance_output_path}/cv_metrics.csv', index=False)  # Overwrites to update every time
+            # metrics_df.to_csv(f'{performance_output_path}/cv_metrics.csv', index=False)  # Overwrites to update every time

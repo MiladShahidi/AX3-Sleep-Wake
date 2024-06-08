@@ -10,11 +10,26 @@ if __name__ == '__main__':
     output_path = f'Results/merged_indicators'
     aws_labels_path = 'data/AWS-Labels'
     psg_labels_path = 'data/PSG-Labels'
-    models = ['AWS-CNN', 'PSG-CNN']
+    model = 'PSG-CNN'
     predictions_path = 'Results/Predictions'
+    cv_predictions_path = 'Results/Predictions/CV'
     biobank_pred_path = 'data/Toolbox Outputs/Timeseries (predictions)'
 
     os.makedirs(output_path, exist_ok=True)
+
+    # CV predictions are bundled together in one file for each fold
+    # It's faster to read them only once before the next loop
+    cv_preds_df = pd.DataFrame()
+    for filename in [f for f in os.listdir(cv_predictions_path) if f.endswith('csv')]:
+        fold_preds_df = pd.read_csv(f'{cv_predictions_path}/{filename}')
+        cv_preds_df = pd.concat([cv_preds_df, fold_preds_df])
+    
+    cv_preds_df = cv_preds_df.rename({'pred': f'pred_{model}'}, axis=1)
+    cv_preds_df.insert(len(cv_preds_df.columns), 'is_cv_prediction', 1)
+    cv_preds_df['epoch_ts'] = pd.to_datetime(cv_preds_df['epoch_ts'])
+    # Todo: don't write this column to cv files, and remove this
+    if 'PSG Sleep' in cv_preds_df.columns:
+        cv_preds_df = cv_preds_df.drop('PSG Sleep', axis=1)
 
     for id in config['subject_ids']:
         print(f'Subject {id:02d}', end='\r')
@@ -28,31 +43,54 @@ if __name__ == '__main__':
         })
         all_epochs['epoch_ts_minutes'] = all_epochs['epoch_ts'].dt.floor('min')
 
-        # Labels
+        # # # # # # # # # # # # 
+        # # # # Labels: AWS and PSG
+        # # # # # # # # # # # # 
+
         aws_df = read_AWS_labels(aws_labels_path, id)
         psg_df = read_PSG_labels(psg_labels_path, id)
 
         aws_df = aws_df.sort_values('AWS time')
 
-        # Our predictions
-        pred_dfs = []
-        for model in models:
-            pred_df = pd.read_csv(f'{predictions_path}/{model}/sub_{id:02d}.csv')
-            pred_df['epoch_ts'] = pd.to_datetime(pred_df['epoch_ts'])
-            pred_df = pred_df[['epoch_ts', 'pred']]
-            pred_df = pred_df.rename({'pred': f'pred_{model}'}, axis=1)
-            pred_dfs.append(pred_df)
+        # # # # # # # # # # # # 
+        # # # # Our predictions
+        # # # # # # # # # # # # 
+        # pred_dfs = []
+        preds_df = pd.read_csv(f'{predictions_path}/{model}/sub_{id:02d}.csv')
+        preds_df['epoch_ts'] = pd.to_datetime(preds_df['epoch_ts'])
+        preds_df = preds_df[['epoch_ts', 'pred']]
+        preds_df = preds_df.rename({'pred': f'pred_{model}'}, axis=1)
+        # pred_dfs.append(pred_df)
 
-        pred_merge_fn = lambda l, r: pd.merge(
-            left=l,
-            right=r,
-            on='epoch_ts',
-            how='inner'  # These files all have the exact same set of timestamp. So inner and left will have the same result
-        )
+        # This part was used when I was loading predictions of multiple models
+        # pred_merge_fn = lambda l, r: pd.merge(
+        #     left=l,
+        #     right=r,
+        #     on='epoch_ts',
+        #     how='inner'  # These files all have the exact same set of timestamp. So inner and left will have the same result
+        # )
+        # model_preds_df = reduce(pred_merge_fn, pred_dfs)
+
+        # # Our CV Predictions
+        # print(cv_preds_df)
+        subject_cv_preds_df = cv_preds_df[cv_preds_df['subject_id'] == id]
+        subject_cv_preds_df = subject_cv_preds_df[['epoch_ts', f'pred_{model}', 'is_cv_prediction']]
         
-        model_preds_df = reduce(pred_merge_fn, pred_dfs)
+        # Stack CV and non-CV predictions on top of each other
 
-        # Biobank predictions
+        # Check for overlap
+        overlap_1 = (preds_df['epoch_ts'].isin(subject_cv_preds_df['epoch_ts'])).any()
+        overlap_2 = (subject_cv_preds_df['epoch_ts'].isin(preds_df['epoch_ts'])).any()
+        if overlap_1 or overlap_2:
+            # CV predictions are done on training data (k-fold cv)
+            # The rest of epochs are from test data. There should be no overlap between the two sets
+            raise ValueError("Overlapping epochs found between CV and non-CV predictions")
+        
+        preds_df = pd.concat([preds_df, subject_cv_preds_df])
+
+        # # # # # # # # # # # # 
+        # # # # Biobank predictions
+        # # # # # # # # # # # # 
         biobank_df = pd.read_csv(f'{biobank_pred_path}/biobank_{id:02d}.csv')
 
         biobank_cols = ['time', 'sleep']
@@ -68,8 +106,11 @@ if __name__ == '__main__':
 
         # model_preds_df['epoch_ts_in_minutes'] = model_preds_df['epoch_ts'].dt.floor('min')
 
+        # # # # # # # # # # # # 
+        # # # # Merge all
+        # # # # # # # # # # # # 
         merge_specs = {
-            'Models':{'df': model_preds_df, 'right_key': 'epoch_ts', 'left_key': 'epoch_ts'},
+            'Models':{'df': preds_df, 'right_key': 'epoch_ts', 'left_key': 'epoch_ts'},
             'Biobank': {'df': biobank_df, 'right_key': 'biobank_time', 'left_key': 'epoch_ts'},
             'PSG': {'df': psg_df, 'right_key': 'epoch_ts', 'left_key': 'epoch_ts'},
             'AWS': {'df': aws_df, 'right_key': 'AWS time', 'left_key': 'epoch_ts_minutes'},  # AWS timestamp are one per minute
