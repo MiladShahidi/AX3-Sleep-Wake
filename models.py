@@ -62,6 +62,12 @@ class CNNModel(tf.keras.Model):
             dropout=0.1
         )
 
+        self.variable_multihead_attn = tf.keras.layers.MultiHeadAttention(
+            num_heads=4,
+            key_dim=32,  # head size
+            dropout=0.1
+        )
+
         # self.attn = tf.keras.layers.Attention()
         self.pooling = tf.keras.layers.GlobalAveragePooling1D()
         self.output_layer = tf.keras.layers.Dense(units=1, activation='sigmoid')
@@ -84,6 +90,8 @@ class CNNModel(tf.keras.Model):
             # by averaging over a moving
             x = self.down_sampler(x)
 
+        x = tf.reshape(x, (-1, config['window_size'] * 3000 // self.down_sample_by, 5))
+        
         x = self.input_batch_norm(x)
 
         # Making copies of the input tensor
@@ -94,10 +102,17 @@ class CNNModel(tf.keras.Model):
         for layer in self.cnn_route:
             cnn_signal = layer(cnn_signal)
         
-        # temporal_attn = self.attn([cnn_signal, cnn_signal, cnn_signal])
         temporal_attn = self.multi_attn(cnn_signal, cnn_signal, cnn_signal)
 
-        cnn_signal = self.pooling(cnn_signal + temporal_attn)  # TODO: The paper weights attn by a scalar
+        cnn_signal = cnn_signal + temporal_attn
+
+        cnn_signal_t = tf.transpose(cnn_signal, perm=[0, 2, 1])  # Keep batch dimension in place
+
+        var_attention = self.variable_multihead_attn(cnn_signal_t, cnn_signal_t, cnn_signal_t)
+
+        cnn_signal = cnn_signal + tf.transpose(var_attention, perm=[0, 2, 1])
+
+        cnn_signal = self.pooling(cnn_signal)  # TODO: The paper weights attn by a scalar
 
         # lstm_signal = tf.identity(cnn_signal)
         # # LSTM route
@@ -148,21 +163,21 @@ class NewCNNModel(tf.keras.Model):
 
         self.cnn_route = [
             tf.keras.layers.Conv2D(filters=128,
-                                   kernel_size=(self.window_size, 8),
+                                   kernel_size=(self.window_size//6, 8),
                                    kernel_initializer='he_uniform', strides=2),
             tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Activation('relu'),
             # tf.keras.layers.Dropout(0.3),
 
             tf.keras.layers.Conv2D(filters=256,
-                                   kernel_size=(self.window_size, 5),
+                                   kernel_size=(self.window_size//6, 5),
                                    kernel_initializer='he_uniform', strides=2),
             tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Activation('relu'),
             # tf.keras.layers.Dropout(0.3),
 
             tf.keras.layers.Conv2D(filters=128,
-                                   kernel_size=(self.window_size, 3),
+                                   kernel_size=(self.window_size//6, 3),
                                    kernel_initializer='he_uniform', strides=2),
             tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Activation('relu'),
@@ -176,8 +191,14 @@ class NewCNNModel(tf.keras.Model):
             dropout=0.1
         )
 
+        self.cross_attn = tf.keras.layers.MultiHeadAttention(
+            num_heads=4,
+            key_dim=32,  # head size
+            dropout=0.1
+        )
+
         # self.attn = tf.keras.layers.Attention()
-        self.pooling = tf.keras.layers.GlobalAveragePooling1D()
+        self.pooling = tf.keras.layers.GlobalAveragePooling2D()
         self.output_layer = tf.keras.layers.Dense(units=1, activation='sigmoid')
 
 
@@ -205,25 +226,21 @@ class NewCNNModel(tf.keras.Model):
         cnn_signal = tf.identity(x)
         # lstm_signal = tf.identity(x)
         
-        print('*'*80)
-        print(cnn_signal.shape)
-        print('*'*80)
         # CNN route
         for layer in self.cnn_route:
             cnn_signal = layer(cnn_signal)
         
         # temporal_attn = self.attn([cnn_signal, cnn_signal, cnn_signal])
         temporal_attn = self.multi_attn(cnn_signal, cnn_signal, cnn_signal)
+        cnn_signal += temporal_attn
 
-        cnn_signal = self.pooling(cnn_signal + temporal_attn)  # TODO: The paper weights attn by a scalar
+        # cnn_signal_t = tf.transpose(cnn_signal, perm=[0, 2, 1, 3])  # Keep batch dimension in place
 
-        # lstm_signal = tf.identity(cnn_signal)
-        # # LSTM route
-        # for layer in self.lstm_route:
-        #     lstm_signal = layer(lstm_signal)
-        
-        # cnn_lstm = tf.concat([cnn_signal, lstm_signal], axis=-1)
+        # var_attention = self.cross_attn(cnn_signal_t, cnn_signal_t, cnn_signal_t)
 
+        # cnn_signal += tf.transpose(var_attention, perm=[0, 2, 1, 3])
+
+        cnn_signal = self.pooling(cnn_signal)  # TODO: The paper weights attn by a scalar
         output = self.output_layer(cnn_signal)
 
         return {
