@@ -186,8 +186,8 @@ def train_model(
     
     callbacks = [
         CustomTensorBoard(log_dir=f"{tensorboard_logdir}/{model_nickname}"),
-        tf.keras.callbacks.ReduceLROnPlateau(factor=np.sqrt(0.1), patience=5, min_lr=1e-6),
-        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=15, start_from_epoch=0)
+        tf.keras.callbacks.ReduceLROnPlateau(factor=0.1, patience=5, min_lr=1e-6),
+        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, start_from_epoch=0)
     ]
     if save_checkpoints:
         callbacks += [tf.keras.callbacks.ModelCheckpoint(f'{saved_models_dir}/{model_nickname}', monitor='val_loss', save_best_only=True)]
@@ -262,7 +262,9 @@ if __name__ == '__main__':
 
     for fold_number, (train_index, test_index) in enumerate(kfold_splitter.split(all_subject_ids)):
     # for fold_number, (train_index, test_index) in enumerate([(np.arange(0, len(all_subject_ids)), [])]):  # For training on all subjects
-
+        if fold_number < 2:
+            continue
+        
         train_val_ids = all_subject_ids[train_index]
         test_ids = all_subject_ids[test_index]
 
