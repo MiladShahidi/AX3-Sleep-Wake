@@ -12,7 +12,7 @@ if __name__ == '__main__':
     psg_labels_path = 'data/PSG-Labels'
     model = 'PSG-CNN'
     predictions_path = 'Results/Predictions'
-    cv_predictions_path = 'Results/Predictions/CV'
+    cv_predictions_path = 'Results/Predictions/CV/Jun 9 - Window 19'
     biobank_pred_path = 'data/Toolbox Outputs/Timeseries (predictions)'
 
     os.makedirs(output_path, exist_ok=True)

@@ -247,7 +247,11 @@ def read_sleep_dairies_v2(path, include_naps):
 
     # # # Done
     
-    d_2 = d_2[['Participant No.', lights_off_col, lights_on_col, 'is_nap']]
+    cols_to_keep = ['Participant No.', lights_off_col, lights_on_col]
+    if include_naps:
+        cols_to_keep += ['is_nap']
+
+    d_2 = d_2[cols_to_keep]
 
     d_2 = d_2.rename({
         'Participant No.': 'subject_id',
@@ -256,6 +260,8 @@ def read_sleep_dairies_v2(path, include_naps):
     }, axis=1)
     
     diary = pd.concat([d_1, d_2])
-    diary['is_nap'] = diary['is_nap'].fillna(0)  # d_1 didn't have this column because file 1 doesn't have naps
+    
+    if include_naps:
+        diary['is_nap'] = diary['is_nap'].fillna(0)  # d_1 didn't have this column because file 1 doesn't have naps
 
     return diary
