@@ -16,7 +16,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import KFold
 from utils.training_utils import CustomTensorBoard
 from config import project_config as config
-from models import CNNModel, Transformer, NewCNNModel
+from models import CNNModel
 
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress warnings and debug info mesasages
@@ -233,6 +233,8 @@ if __name__ == '__main__':
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     cv_preds_path = f'Results/Predictions/CV/{timestamp}'
 
+    training_mode = 'CV'  # Set this to CV for cross validation. Otherwise a sigle model will be trained on all training data
+
     print('*'*20)
     print(f'Model Timestamp: {timestamp}')
     print('*'*20)
@@ -259,24 +261,26 @@ if __name__ == '__main__':
     kfold_splitter = KFold(config['n_cv_folds'])
 
     metrics_df = pd.DataFrame()
+    
+    if training_mode.upper() == 'CV':
+        split_generator = kfold_splitter.split(all_subject_ids)
+    else:  # Traing a single model on all training data
+        split_generator = [(np.arange(0, len(all_subject_ids)), [])]
 
-    for fold_number, (train_index, test_index) in enumerate(kfold_splitter.split(all_subject_ids)):
-    # for fold_number, (train_index, test_index) in enumerate([(np.arange(0, len(all_subject_ids)), [])]):  # For training on all subjects
-        if fold_number < 2:
-            continue
+    for fold_number, (train_index, test_index) in enumerate(split_generator):
         
         train_val_ids = all_subject_ids[train_index]
         test_ids = all_subject_ids[test_index]
 
         print('*'*80)
-        print(f'Starting Fold {fold_number}')
+        print(f'Starting Fold {fold_number+1}/{config['n_cv_folds']}')
         print(f'Test subjects: {test_ids}')
         print('-'*40)
 
-        if len(test_ids) > 0:
+        if training_mode.upper() == 'CV':
             model_nickname = f"model_excl_{np.min(test_ids):02d}_to_{np.max(test_ids):02d}"
         else:
-            model_nickname = 'AttnSleepModel'
+            model_nickname = 'Attn-CNN'
 
         model = train_model(
             datapath=datapath,
@@ -287,8 +291,9 @@ if __name__ == '__main__':
             # save_checkpoints=(len(test_ids) == 0)  # Don't save checkpoints during CV
             )
 
-        if len(test_ids) > 0:
-        # if False:
+        # Predicting for the test fold during cross validation.
+        # Doesn't apply if training one model for all data (i.e. tarining_mode != CV)
+        if training_mode.upper() == 'CV' > 0:
             metrics = {metric_name: [] for metric_name in metric_fns.keys()}  # Placeholder for metric values
 
             test_data = create_dataset(datapath,
