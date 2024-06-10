@@ -146,7 +146,7 @@ def process_AX3_raw_data(df, round_timestamps, normalise_columns=[]):
 
 
 def read_sleep_dairies(path, include_naps):
-    raise NotImplementedError("These sleep diary files are old. Use v2")
+    raise NotImplementedError("These sleep diary files are old. Use the read_sleep_dairies_v2 function")
     sleep_diary_df = pd.DataFrame()
     for filename in [f for f in os.listdir(path) if f.endswith('csv')]:
         if filename.find('nap') >= 0:

@@ -70,6 +70,19 @@ The `window_size` parameter tells the training script which data folder to use, 
 
 The `n_cv_folds` is the number of folds using for K-fold cross validation.
 
+### The Model
+
+The model itself is in `models.py`. You can create new models here, import them into `train.py` and use the same `train_model` function to train and experiment with them.
+
+There are three different methods for building a model in Keras: 1) Sequential 2) Functional 3) Sub-classing. We're taking the third approach in `models.py`, which is the most flexible (but needs a little more coding). See [this article](https://medium.com/thedeephub/sequential-vs-functional-vs-subclassing-api-in-tensorflow-8bfcfe91859d) for details.
+
+A sub-classed model has at least two main components:
+
+1) An `__init__` function, in which you craete all the layers the model is going to use, e.g. perhaps a few dense layers, a few convolutional layers, etc.
+2) A `call` function where you use all these layers to describe the computation the model wants to do with its input.
+
+If you need to create a new model, it doesn't have to be sub-classed. You can take a simple approach, like the functional api, and it will work fine with `train.py`.
+
 ### Training
 Model training is done in `train.py`. This file can run in two modes: cross validation and training a single model. This is determined by the `training_mode` flag and can be set at the top of the main body of the script.
 
