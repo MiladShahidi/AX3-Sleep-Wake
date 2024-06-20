@@ -11,7 +11,7 @@ if __name__ == '__main__':
 
     model_name = 'AWS-CNN'
     saved_model_path = f'Model Repo/{model_name}'
-    datapath = 'data/Tensorflow/window_3/unlabelled'
+    datapath = 'data/Tensorflow/window_19/unlabelled'
     pred_output_path = f'Results/Predictions/{model_name}'
 
     os.makedirs(pred_output_path, exist_ok=True)

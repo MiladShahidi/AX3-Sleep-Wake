@@ -92,7 +92,7 @@ def create_windowed_df(df, window_size):
 
 if __name__ == '__main__':
     
-    WINDOW_SIZE = 19
+    WINDOW_SIZE = 5
 
     project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
     parquet_epoch_data_path = f'{project_root}/data/Parquet'

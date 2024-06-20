@@ -186,22 +186,29 @@ def read_sleep_dairies_v2(path, include_naps):
         
         return time_col.astype(str).apply(strip_junk_chars)
     
-    # There are two files with different formats for two groups of subjects
+    # There are three files with different formats.
+    # Night sleep for 1-18
+    # Night sleep for 19-36
+    # Naps for 19-36
 
+    # # # # # # # # # # # # # # # 
     # # # # # File 1: ids 1-18
+    # # # # # # # # # # # # # # # 
 
-    d_1 = pd.read_excel('data/Sleep diaries/SRC_DRI_001_SleepDiary_All_v5.0_20JAN2021.xlsx', sheet_name='Tot_sample')
+    sleep_df_1 = pd.read_excel(f'{path}/SRC_DRI_001_SleepDiary_All_v5.0_20JAN2021.xlsx', sheet_name='Tot_sample')
 
-    d_1 = d_1.sort_values(['participantNo', 'date_gotosleep']).reset_index(drop=True)
+    sleep_df_1 = sleep_df_1.sort_values(['participantNo', 'date_gotosleep']).reset_index(drop=True)
     
-    d_1['lights_off'] = pd.to_datetime(d_1['date_gotosleep'].astype(str) + ' ' + d_1['gotosleep'].astype(str))
-    d_1['lights_on'] = pd.to_datetime(d_1['date_finalawake'].astype(str) + ' ' + d_1['finalawake'].astype(str))
-    d_1 = d_1[['participantNo', 'lights_off', 'lights_on']]
-    d_1 = d_1.rename({'participantNo': 'subject_id'}, axis=1)
+    sleep_df_1['lights_off'] = pd.to_datetime(sleep_df_1['date_gotosleep'].astype(str) + ' ' + sleep_df_1['gotosleep'].astype(str))
+    sleep_df_1['lights_on'] = pd.to_datetime(sleep_df_1['date_finalawake'].astype(str) + ' ' + sleep_df_1['finalawake'].astype(str))
+    sleep_df_1 = sleep_df_1[['participantNo', 'lights_off', 'lights_on']]
+    sleep_df_1 = sleep_df_1.rename({'participantNo': 'subject_id'}, axis=1)
 
+    # # # # # # # # # # # # # # # 
     # # # # # File 2: ids 19-36
+    # # # # # # # # # # # # # # # 
 
-    d_2 = pd.read_excel('data/Sleep diaries/SRCDRI001_Sleep Diary 019-036 DB.xlsx', header=1)
+    sleep_df_2 = pd.read_excel(f'{path}/SRCDRI001_Sleep Diary 019-036 DB.xlsx', header=1)
 
     # These two have not been implemented or used yet
     # What time did you get into bed?  -->  sleep start
@@ -214,54 +221,70 @@ def read_sleep_dairies_v2(path, include_naps):
     lights_on_col = 'What time was your final awakening?'
 
     for col in [lights_off_col, lights_on_col]:
-        d_2[col] = clean_time_column(d_2[col])  # Clean / drop missing time columns
-        d_2 = d_2.dropna(subset=[col])  # The function above replaces unsalvageable time-string with NaNs
-
-    # This file includes naps, which we may not want
-    nap_indicator_col = 'Why did you take a nap?'
-    not_a_nap_fltr = d_2[nap_indicator_col].isna() | d_2[nap_indicator_col].isin(['x', 'X', 0, '-'])
-
-    if not include_naps:  # Remove naps if not wanted
-        d_2 = d_2[not_a_nap_fltr]  # only keep non-nap episodes
-    else:
-        d_2['is_nap'] = (~not_a_nap_fltr).astype(int)
+        sleep_df_2[col] = clean_time_column(sleep_df_2[col])  # Clean / drop missing time columns
+        sleep_df_2 = sleep_df_2.dropna(subset=[col])  # The function above replaces unsalvageable time-string with NaNs
 
     # This file (subjects 19-36) has a single date per row
     # So we need to infer sleep_start and sleep_end dates
     # Sleep end date is always the given date + 1, becuase even if sleep start after midnight this date will still show the day before
     # Sleep start is the same only if, time of sleep is before 00:00:00
-    d_2['today'] = d_2['Date on Diary']
-    d_2['tomorrow'] = d_2['Date on Diary'] + np.timedelta64(1, 'D')
+    sleep_df_2['today'] = sleep_df_2['Date on Diary']
+    sleep_df_2['tomorrow'] = sleep_df_2['Date on Diary'] + np.timedelta64(1, 'D')
 
     # # # Date for sleep end
     # date + time to make a complete datetime
-    d_2[lights_on_col] = pd.to_datetime(d_2['tomorrow'].astype(str) + ' ' + d_2[lights_on_col].astype(str))
+    sleep_df_2[lights_on_col] = pd.to_datetime(sleep_df_2['tomorrow'].astype(str) + ' ' + sleep_df_2[lights_on_col].astype(str))
 
     # # # Date for sleep start. depends on wether sleep start before or after midnight
-    d_2['lights_off_hour'] = d_2[lights_off_col].astype(str).apply(lambda s: s.split(':')[0]).astype(int)
+    sleep_df_2['lights_off_hour'] = sleep_df_2[lights_off_col].astype(str).apply(lambda s: s.split(':')[0]).astype(int)
     
     # The date is assigned based on wether sleep starts before or after midnight (hour < 12)
-    d_2['lights_off_date'] = d_2['today'].where(d_2['lights_off_hour'] > 12, d_2['tomorrow'])  
+    sleep_df_2['lights_off_date'] = sleep_df_2['today'].where(sleep_df_2['lights_off_hour'] > 12, sleep_df_2['tomorrow'])  
     # date + time to make a complete datetime
-    d_2[lights_off_col] = pd.to_datetime(d_2['lights_off_date'].astype(str) + ' ' + d_2[lights_off_col])
+    sleep_df_2[lights_off_col] = pd.to_datetime(sleep_df_2['lights_off_date'].astype(str) + ' ' + sleep_df_2[lights_off_col])
 
     # # # Done
     
     cols_to_keep = ['Participant No.', lights_off_col, lights_on_col]
-    if include_naps:
-        cols_to_keep += ['is_nap']
 
-    d_2 = d_2[cols_to_keep]
+    sleep_df_2 = sleep_df_2[cols_to_keep]
 
-    d_2 = d_2.rename({
+    sleep_df_2 = sleep_df_2.rename({
         'Participant No.': 'subject_id',
         lights_off_col: 'lights_off',
         lights_on_col: 'lights_on',
     }, axis=1)
     
-    diary = pd.concat([d_1, d_2])
+    # # # # # # # # # # # # # # # 
+    # # # # # File 3: Naps 19-36
+    # # # # # # # # # # # # # # # 
+
+    # SRCDRI001_Sleep Diary 019-036_nap
+    if include_naps:
+        nap_df = pd.read_csv(f'{path}/SRCDRI001_Sleep Diary 019-036_nap.csv')
+        nap_df[lights_off_col] = pd.to_datetime(nap_df['date_startnap'].astype(str) + ' ' + nap_df['nap_start'].astype(str))
+        nap_df[lights_on_col] = pd.to_datetime(nap_df['date_endnap'].astype(str) + ' ' + nap_df['nap_end'].astype(str))
+        # nap_df = nap_df.rename({'participantNo': 'subject_id'}, axis=1)
+        cols_to_keep = ['participantNo', lights_off_col, lights_on_col]
+        nap_df = nap_df[cols_to_keep]
+
+        nap_df = nap_df.rename({
+            'participantNo': 'subject_id',
+            lights_off_col: 'lights_off',
+            lights_on_col: 'lights_on',
+        }, axis=1)
+
+        nap_df.insert(len(nap_df.columns), 'is_nap', 1)
+    
+    # Concat the three
+
+    concat_list = [sleep_df_1, sleep_df_2]
+    if include_naps:
+        concat_list += [nap_df]
+
+    diary = pd.concat(concat_list)
     
     if include_naps:
-        diary['is_nap'] = diary['is_nap'].fillna(0)  # d_1 didn't have this column because file 1 doesn't have naps
+        diary['is_nap'] = diary['is_nap'].fillna(0)  # night sleep files didn't have this column
 
     return diary
