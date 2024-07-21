@@ -9,7 +9,7 @@ import os
 
 if __name__ == '__main__':
 
-    model_name = 'AWS-CNN'
+    model_name = 'CNN-Win_3-Freq_10'
     saved_model_path = f'Model Repo/{model_name}'
     datapath = 'data/Tensorflow/window_3/unlabelled'
     pred_output_path = f'Results/Predictions/{model_name}'

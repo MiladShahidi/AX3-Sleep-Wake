@@ -10,9 +10,9 @@ if __name__ == '__main__':
     output_path = f'Results/merged_indicators'
     aws_labels_path = 'data/AWS-Labels'
     psg_labels_path = 'data/PSG-Labels'
-    model = 'PSG-CNN'
+    model = 'CNN-Win_3-Freq_10'
     predictions_path = 'Results/Predictions'
-    cv_predictions_path = 'Results/Predictions/CV/Jun 9 - Window 19'
+    cv_predictions_path = f'Results/Predictions/CV/{model}'
     biobank_pred_path = 'data/Toolbox Outputs/Timeseries (predictions)'
 
     os.makedirs(output_path, exist_ok=True)

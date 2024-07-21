@@ -2,8 +2,6 @@ import tensorflow as tf
 from config import project_config as config
 import numpy as np
 
-# def cnn_model_fold():
-    # pass
 class CNNModel(tf.keras.Model):
 
     def __init__(
@@ -106,11 +104,11 @@ class CNNModel(tf.keras.Model):
 
         cnn_signal = cnn_signal + temporal_attn
 
-        cnn_signal_t = tf.transpose(cnn_signal, perm=[0, 2, 1])  # Keep batch dimension in place
+        # cnn_signal_t = tf.transpose(cnn_signal, perm=[0, 2, 1])  # Keep batch dimension in place
 
-        var_attention = self.variable_multihead_attn(cnn_signal_t, cnn_signal_t, cnn_signal_t)
+        # var_attention = self.variable_multihead_attn(cnn_signal_t, cnn_signal_t, cnn_signal_t)
 
-        cnn_signal = cnn_signal + tf.transpose(var_attention, perm=[0, 2, 1])
+        # cnn_signal = cnn_signal + tf.transpose(var_attention, perm=[0, 2, 1])
 
         cnn_signal = self.pooling(cnn_signal)  # TODO: The paper weights attn by a scalar
 

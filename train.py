@@ -157,14 +157,15 @@ def keep_subjects(features, labels=None, subject_ids=[]):
 
 def train_model(
         datapath,
+        train_config,
         train_val_ids,
         output_dir,
         model_nickname,
         save_checkpoints
         ):
 
-    saved_models_dir = f'{output_dir}/savedmodels/{timestamp}'
-    tensorboard_logdir = f"{output_dir}/tb_logs/{timestamp}"
+    saved_models_dir = f'{output_dir}/savedmodels/{model_nickname}'
+    tensorboard_logdir = f"{output_dir}/tb_logs/{model_nickname}"
 
     train_data = create_dataset(
         datapath,
@@ -185,15 +186,15 @@ def train_model(
         )
     
     callbacks = [
-        CustomTensorBoard(log_dir=f"{tensorboard_logdir}/{model_nickname}"),
+        CustomTensorBoard(log_dir=f"{tensorboard_logdir}"),
         tf.keras.callbacks.ReduceLROnPlateau(factor=0.1, patience=5, min_lr=1e-6),
         tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, start_from_epoch=0)
     ]
     if save_checkpoints:
-        callbacks += [tf.keras.callbacks.ModelCheckpoint(f'{saved_models_dir}/{model_nickname}', monitor='val_loss', save_best_only=True)]
+        callbacks += [tf.keras.callbacks.ModelCheckpoint(f'{saved_models_dir}', monitor='val_loss', save_best_only=True)]
 
-    # model = NewCNNModel(down_sample_by=60, window_size=config['window_size'])
-    model = CNNModel(down_sample_by=60)
+    # model = NewCNNModel(down_sample_by=60, window_size=train_config['window_size'])
+    model = CNNModel(down_sample_by=train_config['down_sample_by'])
 
     model.compile(
         optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-3),  # Legacy is because the current one runs slow on M1/M2 macs
@@ -214,33 +215,40 @@ def train_model(
         train_data,
         # class_weight={0: 0.6, 1: 0.4},
         epochs=1000,
-        steps_per_epoch=100,
+        steps_per_epoch=200,
         validation_data=val_data,
         validation_steps=50,
         callbacks=callbacks
         )
 
-    # model.save(f'{saved_models_dir}/{model_nickname}')
-
     return model
 
 
-if __name__ == '__main__':
-
-    datapath = f"data/Tensorflow/window_{config['window_size']}/labelled"
+def training_main(train_config):
+        
+    datapath = f"data/Tensorflow/window_{train_config['window_size']}/labelled"
     psg_labels_path = 'data/PSG-Labels'
     output_dir = 'training_output'
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     cv_preds_path = f'Results/Predictions/CV/{timestamp}'
+    logs_filename = 'training_logs.csv'
 
-    training_mode = 'CV'  # Set this to CV for cross validation. Otherwise a sigle model will be trained on all training data
+    training_log = pd.DataFrame({
+        'timestamp': timestamp,
+        'Window': train_config['window_size'],
+        'Freq': 100 // train_config['down_sample_by'],
+    }, index=[0])
+    training_log.to_csv(logs_filename, mode='a', header=not os.path.isfile(logs_filename), index=False)
+ 
+    training_mode = 'CV'  # Set this to CV for cross validation. Otherwise a single model will be trained on all training data
 
     print('*'*20)
     print(f'Model Timestamp: {timestamp}')
     print('*'*20)
 
-    all_subject_ids = np.array(config['subject_ids'])
+    all_subject_ids = np.array(train_config['subject_ids'])
 
+    # # # # # # # # CV stuff only
     #  Read all PSG labels to compute metrics during CV
     psg_labels = pd.DataFrame()
     for id in all_subject_ids:
@@ -255,13 +263,11 @@ if __name__ == '__main__':
         "Cohen's Kappa": lambda y_true, y_pred: cohen_kappa_score(y1=y_true, y2=y_pred),
         'Specificity': lambda y_true, y_pred: classification_report(y_true=y_true, y_pred=y_pred, output_dict=True, labels=[0, 1])['0']['precision']
     }
-
     os.makedirs(cv_preds_path)
-    
-    kfold_splitter = KFold(config['n_cv_folds'])
-
     metrics_df = pd.DataFrame()
     
+    kfold_splitter = KFold(train_config['n_cv_folds'])
+
     if training_mode.upper() == 'CV':
         split_generator = kfold_splitter.split(all_subject_ids)
     else:  # Traing a single model on all training data
@@ -273,17 +279,18 @@ if __name__ == '__main__':
         test_ids = all_subject_ids[test_index]
 
         print('*'*80)
-        print(f'Starting Fold {fold_number+1}/{config['n_cv_folds']}')
+        print(f'Starting Fold {fold_number+1}/{train_config["n_cv_folds"]}')
         print(f'Test subjects: {test_ids}')
         print('-'*40)
 
         if training_mode.upper() == 'CV':
             model_nickname = f"model_excl_{np.min(test_ids):02d}_to_{np.max(test_ids):02d}"
         else:
-            model_nickname = 'Attn-CNN'
+            model_nickname = f'{timestamp}-CNN-Win_{train_config["window_size"]}-Freq_{100//train_config["down_sample_by"]}'
 
         model = train_model(
             datapath=datapath,
+            train_config=train_config,
             train_val_ids=train_val_ids,
             output_dir=output_dir,
             model_nickname=model_nickname,
@@ -293,7 +300,7 @@ if __name__ == '__main__':
 
         # Predicting for the test fold during cross validation.
         # Doesn't apply if training one model for all data (i.e. tarining_mode != CV)
-        if training_mode.upper() == 'CV' > 0:
+        if training_mode.upper() == 'CV':
             metrics = {metric_name: [] for metric_name in metric_fns.keys()}  # Placeholder for metric values
 
             test_data = create_dataset(datapath,
@@ -321,7 +328,7 @@ if __name__ == '__main__':
             labels_pred_df.to_csv(f'{cv_preds_path}/{model_nickname}.csv', index=False)
             
             # for metric_name, metric_fn in metric_fns.items():
-            #     metric_value = metric_fn(y_pred=labels_pred_df['pred'], y_true=labels_pred_df['label'])
+            #     metric_value = metric_fn(y_pred=labels_pred_df['pred'], y_true=labels_pred_df['PSG Sleep'])
             #     metrics[metric_name].append(round(metric_value * 100, 2))
             
             # fold_metrics = pd.DataFrame(metrics)
@@ -330,4 +337,14 @@ if __name__ == '__main__':
 
             # metrics_df = pd.concat([metrics_df, fold_metrics])
 
-            # metrics_df.to_csv(f'{performance_output_path}/cv_metrics.csv', index=False)  # Overwrites to update every time
+            # metrics_df.to_csv(f'cv_metrics.csv', index=False)  # Overwrites to update every time
+
+
+if __name__ == '__main__':
+    # DS: 2, 10, 100, 1000
+    # Freq: 50, 10, 1, 0.1
+    down_sample_list = [10]
+    for ds in down_sample_list:
+        train_config = {k: v for k, v in config.items()}
+        train_config['down_sample_by'] = ds
+        training_main(train_config)
