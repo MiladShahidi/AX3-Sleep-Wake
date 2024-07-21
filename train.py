@@ -215,7 +215,7 @@ def train_model(
         train_data,
         # class_weight={0: 0.6, 1: 0.4},
         epochs=1000,
-        steps_per_epoch=100,
+        steps_per_epoch=200,
         validation_data=val_data,
         validation_steps=50,
         callbacks=callbacks
@@ -240,7 +240,7 @@ def training_main(train_config):
     }, index=[0])
     training_log.to_csv(logs_filename, mode='a', header=not os.path.isfile(logs_filename), index=False)
  
-    training_mode = 'all'  # Set this to CV for cross validation. Otherwise a single model will be trained on all training data
+    training_mode = 'CV'  # Set this to CV for cross validation. Otherwise a single model will be trained on all training data
 
     print('*'*20)
     print(f'Model Timestamp: {timestamp}')
@@ -265,7 +265,6 @@ def training_main(train_config):
     }
     os.makedirs(cv_preds_path)
     metrics_df = pd.DataFrame()
-    # # # # # # # # CV stuff only
     
     kfold_splitter = KFold(train_config['n_cv_folds'])
 
@@ -301,7 +300,7 @@ def training_main(train_config):
 
         # Predicting for the test fold during cross validation.
         # Doesn't apply if training one model for all data (i.e. tarining_mode != CV)
-        if training_mode.upper() == 'CV' > 0:
+        if training_mode.upper() == 'CV':
             metrics = {metric_name: [] for metric_name in metric_fns.keys()}  # Placeholder for metric values
 
             test_data = create_dataset(datapath,
@@ -329,7 +328,7 @@ def training_main(train_config):
             labels_pred_df.to_csv(f'{cv_preds_path}/{model_nickname}.csv', index=False)
             
             # for metric_name, metric_fn in metric_fns.items():
-            #     metric_value = metric_fn(y_pred=labels_pred_df['pred'], y_true=labels_pred_df['label'])
+            #     metric_value = metric_fn(y_pred=labels_pred_df['pred'], y_true=labels_pred_df['PSG Sleep'])
             #     metrics[metric_name].append(round(metric_value * 100, 2))
             
             # fold_metrics = pd.DataFrame(metrics)
@@ -338,13 +337,13 @@ def training_main(train_config):
 
             # metrics_df = pd.concat([metrics_df, fold_metrics])
 
-            # metrics_df.to_csv(f'{performance_output_path}/cv_metrics.csv', index=False)  # Overwrites to update every time
+            # metrics_df.to_csv(f'cv_metrics.csv', index=False)  # Overwrites to update every time
 
 
 if __name__ == '__main__':
     # DS: 2, 10, 100, 1000
     # Freq: 50, 10, 1, 0.1
-    down_sample_list = [2, 10, 100]
+    down_sample_list = [10]
     for ds in down_sample_list:
         train_config = {k: v for k, v in config.items()}
         train_config['down_sample_by'] = ds
