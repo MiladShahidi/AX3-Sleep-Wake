@@ -11,5 +11,5 @@ class CustomTensorBoard(tf.keras.callbacks.TensorBoard):
 
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
-        logs.update({'learning_rate': self.model.optimizer.learning_rate})
+        # logs.update({'learning_rate': self.model.optimizer.learning_rate})
         super().on_epoch_end(epoch, logs)

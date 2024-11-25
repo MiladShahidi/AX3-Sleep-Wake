@@ -92,7 +92,7 @@ def create_windowed_df(df, window_size):
 
 if __name__ == '__main__':
     
-    WINDOW_SIZE = 3
+    WINDOW_SIZE = 21
 
     project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
     parquet_epoch_data_path = f'{project_root}/data/Parquet'
@@ -105,8 +105,8 @@ if __name__ == '__main__':
 
     # The follwing controls which type of dataset will be written
     write_flag = {
-        LABELLED: False,
-        UNLABELLED: True
+        LABELLED: True,
+        UNLABELLED: False
     }
 
     assert write_flag[LABELLED] or write_flag[UNLABELLED], "At least one write flag must be set to True"

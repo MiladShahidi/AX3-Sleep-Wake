@@ -17,142 +17,11 @@ from sklearn.model_selection import KFold
 from utils.training_utils import CustomTensorBoard
 from config import project_config as config
 from models import CNNModel
+from utils.tfrecord_utils import create_dataset
+from utils.helpers import keep_subjects
 
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress warnings and debug info mesasages
-
-def parse_tfrecord(example, has_labels):
-    seq_features_spec = {
-        'X': tf.io.VarLenFeature(dtype=tf.float32),
-        'Y': tf.io.VarLenFeature(dtype=tf.float32),
-        'Z': tf.io.VarLenFeature(dtype=tf.float32),
-        'Temp': tf.io.VarLenFeature(dtype=tf.float32)
-        }
-
-    context_features_spec = {
-        'subject_id': tf.io.FixedLenFeature([], dtype=tf.int64),
-        'epoch_id': tf.io.VarLenFeature(dtype=tf.int64),
-        'epoch_ts': tf.io.VarLenFeature(dtype=tf.string),
-        'central_epoch_id': tf.io.FixedLenFeature([], dtype=tf.int64),
-        'central_epoch_ts': tf.io.VarLenFeature(dtype=tf.string)
-        }
-    if has_labels:
-        context_features_spec['label'] = tf.io.FixedLenFeature([], dtype=tf.float32)
-
-    context, features, _ = tf.io.parse_sequence_example(
-        example,
-        context_features=context_features_spec,
-        sequence_features=seq_features_spec
-    )
-
-    for feature_name, tensor in features.items():
-        if isinstance(tensor, tf.SparseTensor):
-            features[feature_name] = tf.sparse.to_dense(tensor)
-
-        # I don't like this. It's a quick hack to reshape each axis (X, Y, Z) to (T, ) rather than (T, 1)
-        features[feature_name] = tf.squeeze(features[feature_name])
-
-    for feature_name, tensor in context.items():
-        if isinstance(tensor, tf.SparseTensor):
-            context[feature_name] = tf.sparse.to_dense(tensor)
-
-        # I don't like this. It's a quick hack to reshape each axis (X, Y, Z) to (T, ) rather than (T, 1)
-        context[feature_name] = tf.squeeze(context[feature_name])
-
-    return context, features
-
-
-def reshape_features(context, features):
-    # Each feature (X, Y, Z, etc.) has shape (window length, epoch length)
-    xyz = tf.concat([
-        tf.expand_dims(features['X'], axis=-1),  # expand dimensions and insert a new axis for X, Y, Z
-        tf.expand_dims(features['Y'], axis=-1),
-        tf.expand_dims(features['Z'], axis=-1)
-        ], axis=-1)
-        
-    # axis=-1 means last one. This is the axis we just created above.
-    # This finds the L2 norm over the X-Y-Z axis
-    triaxial_l2_norm = tf.norm(xyz, ord=2, axis=-1, keepdims=True)  # L2 Norm
-    
-    norm_diff = triaxial_l2_norm[:, 1:, :] - triaxial_l2_norm[:, :-1, :]
-    # [[0, 0], [1, 0], [0, 0]] means only insert 1 pad in axis=1 and before the values
-    norm_diff = tf.pad(norm_diff, [[0, 0], [1, 0], [0, 0]])  # pad the diff at t=0 to make it the same shape again
-
-    feature_list = [
-        tf.expand_dims(features['X'], axis=-1),
-        tf.expand_dims(features['Y'], axis=-1),
-        tf.expand_dims(features['Z'], axis=-1),
-        tf.expand_dims(features['Temp'], axis=-1),
-        triaxial_l2_norm,
-        # tf.abs(norm_diff)
-    ]
-
-    stacked_features = tf.concat(feature_list, axis=-1)
-    
-    # stacked_features.shape is (window_size, epoch len, n_sequences)
-    # Below, we combine the first two dimensions, i.e. concatenate all epochs in the window
-    # And make it (win_size * epoch len, n_sequences)
-    n_sequences = len(feature_list)
-    seq_features = {
-        # 'features': stacked_features  # not reshaping
-        'features': tf.reshape(stacked_features, (-1, n_sequences))
-    }
-        
-    if 'label' in context:
-        label = context.pop('label')
-        features = {**seq_features, **context}
-        return features, label
-    else:
-        features = {**seq_features, **context}
-        return features
-
-
-def create_dataset(path, compressed=False, filters=None, has_labels=True, batch_size=None, repeat=True, shuffle=True):
-    
-    if tf.io.gfile.exists(path):  # This means it's either a single file name or a directory, not a pattern
-        
-        if tf.io.gfile.isdir(path):
-            print("Note: When passing a directory to `create_dataset`, compression will determine which files are included (.gz or not)")
-            extenstion = "tfrecord" + (".gz" if compressed else "")
-            files = tf.data.Dataset.list_files(f"{path}/*.{extenstion}", shuffle=True)
-        else:
-            files = path
-    
-    else:  # It must be a pattern like data/sub01_*.tfrecord
-        files = tf.data.Dataset.list_files(path, shuffle=True)
-
-    dataset = tf.data.TFRecordDataset(files, compression_type='GZIP' if compressed else None)
-
-    dataset = dataset.map(partial(parse_tfrecord, has_labels=has_labels)).map(reshape_features)
-
-    if filters is not None:
-      for filter in filters:
-        dataset = dataset.filter(filter)
-      
-    if shuffle:
-      shuffle_buffer_size = 10000 if batch_size is None else batch_size * 10
-      dataset = dataset.shuffle(buffer_size=shuffle_buffer_size, reshuffle_each_iteration=True)
-
-    # Shuffle then batch
-    if batch_size:
-        dataset = dataset.batch(batch_size)
-
-    if repeat:
-        dataset = dataset.repeat()
-
-    dataset = dataset.prefetch(tf.data.AUTOTUNE)
-
-    return dataset
-
-
-def drop_subjects(features, labels=None, subject_ids=[]):
-    # This is vectorized and with reduce_all, because subject_ids is a list of possibly multiple ids
-    return tf.reduce_all(tf.not_equal(features['subject_id'], subject_ids))
-
-
-def keep_subjects(features, labels=None, subject_ids=[]):
-    # This is vectorized and with reduce_any, because subject_ids is a list of possibly multiple ids
-    return tf.reduce_any(tf.equal(features['subject_id'], subject_ids))
 
 
 def train_model(
@@ -194,7 +63,10 @@ def train_model(
         callbacks += [tf.keras.callbacks.ModelCheckpoint(f'{saved_models_dir}', monitor='val_loss', save_best_only=True)]
 
     # model = NewCNNModel(down_sample_by=60, window_size=train_config['window_size'])
-    model = CNNModel(down_sample_by=train_config['down_sample_by'])
+    model = CNNModel(
+        down_sample_by=train_config['down_sample_by'],
+        num_conv_filters=32,
+        )
 
     model.compile(
         optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-3),  # Legacy is because the current one runs slow on M1/M2 macs
@@ -214,10 +86,10 @@ def train_model(
     model.fit(
         train_data,
         # class_weight={0: 0.6, 1: 0.4},
-        epochs=1000,
-        steps_per_epoch=200,
+        epochs=1,
+        steps_per_epoch=2,
         validation_data=val_data,
-        validation_steps=50,
+        validation_steps=2,
         callbacks=callbacks
         )
 
@@ -307,6 +179,9 @@ def training_main(train_config):
                                     filters=[partial(keep_subjects, subject_ids=test_ids)],
                                     repeat=False, shuffle=False, batch_size=100)
 
+            print('#-'*80)
+            print(model.evaluate(test_data))
+            print('#-'*80)
             pred = model.predict(test_data)
 
             pred['pred'] = np.round(np.squeeze(pred['pred']))  # Threshold = 0.5
