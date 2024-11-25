@@ -1,18 +1,33 @@
+from functools import partial
 import tensorflow as tf
 from config import project_config as config
 import numpy as np
+from utils.tfrecord_utils import create_dataset
+from utils.helpers import keep_subjects
+
 
 class CNNModel(tf.keras.Model):
 
     def __init__(
             self,
-            down_sample_by=None,
+            down_sample_by,
+            num_conv_filters,
+            num_attention_heads,
+            stride,
+            window_size,
+            eval_datapath=None,
             name='CNNModel',
             **kwargs
             ):
         super().__init__(name=name, **kwargs)
         # self.rnn_layer = tf.keras.layers.LSTM(units=16)
         self.down_sample_by = down_sample_by
+        self.num_conv_filters = num_conv_filters
+        self.window_size = window_size
+        self.num_attention_heads = num_attention_heads
+        self.stride = stride
+
+        self.eval_datapath = eval_datapath
         
         if self.down_sample_by:
             self.down_sampler = tf.keras.layers.MaxPool1D(pool_size=self.down_sample_by, strides=self.down_sample_by)
@@ -31,37 +46,37 @@ class CNNModel(tf.keras.Model):
         # ToDo: dropout (for attn) etc.
 
         self.cnn_route = [
-            tf.keras.layers.Conv1D(filters=128,
+            tf.keras.layers.Conv1D(filters=self.num_conv_filters,
                                    kernel_size=8,
-                                   kernel_initializer='he_uniform', strides=2),
+                                   kernel_initializer='he_uniform', strides=self.stride),
             tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Activation('relu'),
-            # tf.keras.layers.Dropout(0.3),
+            # tf.keras.layers.Dropout(self.dropout),
 
-            tf.keras.layers.Conv1D(filters=256,
+            tf.keras.layers.Conv1D(filters=self.num_conv_filters,
                                    kernel_size=5,
-                                   kernel_initializer='he_uniform', strides=2),
+                                   kernel_initializer='he_uniform', strides=self.stride),
             tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Activation('relu'),
-            # tf.keras.layers.Dropout(0.3),
+            # tf.keras.layers.Dropout(self.dropout),
 
-            tf.keras.layers.Conv1D(filters=128,
+            tf.keras.layers.Conv1D(filters=self.num_conv_filters,
                                    kernel_size=3,
-                                   kernel_initializer='he_uniform', strides=2),
+                                   kernel_initializer='he_uniform', strides=self.stride),
             tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Activation('relu'),
-            # tf.keras.layers.Dropout(0.3),
+            # tf.keras.layers.Dropout(self.dropout),
         ]
 
         # TODO: Looks like there is an additional matrix multiplication after (at the end of) attention in the paper (W_o)
         self.multi_attn = tf.keras.layers.MultiHeadAttention(
-            num_heads=4,
+            num_heads=self.num_attention_heads,
             key_dim=32,  # head size
             dropout=0.1
         )
 
         self.variable_multihead_attn = tf.keras.layers.MultiHeadAttention(
-            num_heads=4,
+            num_heads=self.num_attention_heads,
             key_dim=32,  # head size
             dropout=0.1
         )
@@ -88,7 +103,7 @@ class CNNModel(tf.keras.Model):
             # by averaging over a moving
             x = self.down_sampler(x)
 
-        x = tf.reshape(x, (-1, config['window_size'] * 3000 // self.down_sample_by, 5))
+        x = tf.reshape(x, (-1, self.window_size * 3000 // self.down_sample_by, 5))
         
         x = self.input_batch_norm(x)
 
@@ -127,3 +142,38 @@ class CNNModel(tf.keras.Model):
             'pred': output
         }
 
+    def evaluate(
+        self,
+        x=None,
+        y=None,
+        batch_size=None,
+        verbose='auto',
+        sample_weight=None,
+        steps=None,
+        callbacks=None,
+        return_dict=False,
+        **kwargs
+        ):
+        
+        if isinstance(x, tf.data.Dataset):
+            eval_data = x
+        else:  # x is the list of eval subject ids
+            eval_files = f"{self.eval_datapath}/window_{self.window_size}/labelled"
+            eval_data = create_dataset(eval_files,
+                                    filters=[partial(keep_subjects, subject_ids=x),
+                                            lambda x, y: x['central_epoch_id'] % 100 == 0],
+                                    repeat=False, shuffle=False, batch_size=100)
+            
+        eval_result = super().evaluate(
+            x=eval_data,
+            # y=y,
+            batch_size=batch_size,
+            verbose=verbose,
+            sample_weight=sample_weight,
+            steps=steps,
+            callbacks=callbacks,
+            return_dict=return_dict,
+            **kwargs
+            )
+        
+        return eval_result
