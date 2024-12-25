@@ -1,5 +1,5 @@
 import collections
-
+from keras_tuner.engine import trial as trial_module
 import numpy as np
 import pandas as pd
 
@@ -17,7 +17,9 @@ def get_metrics_std_dict(metrics_dicts):
 
 
 def pd_inner_cv_get_result(tuner):
-    num_trials = tuner.oracle.max_trials
+    num_trials = len([trial for trial in tuner.oracle.trials.values() if trial.status == trial_module.TrialStatus.COMPLETED])
+    # num_trials = tuner.oracle.max_trials
+    
     best_trials = tuner.oracle.get_best_trials(num_trials)
     model_results = [i for i in range(num_trials)]
     for i in range(num_trials):

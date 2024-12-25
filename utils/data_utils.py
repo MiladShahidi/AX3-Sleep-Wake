@@ -3,6 +3,7 @@ import os
 import numpy as np
 from actipy import read_device
 from config import project_config as config
+import re
 
 
 def read_AWS_labels(path, subject_id):
@@ -74,13 +75,17 @@ def read_parquet_AX3_epochs(path, subject_id, round_timestamps):
     return subject_data
 
 
-def read_AX3_cwa(path, subject_id, freq=config['AX3_freq'], seconds_per_epoch=config['seconds_per_epoch']):
+def read_AX3_cwa(path, subject_id, subject_type='D', freq=config['AX3_freq'], seconds_per_epoch=config['seconds_per_epoch']):
 
     rows_per_epoch = freq * seconds_per_epoch
 
     cwa_files = [f for f in os.listdir(f'{path}') if f.endswith('.cwa')]
-    subject_files = [filename for filename in cwa_files if filename.find(f'AX3_ALL_{subject_id:03d}') >= 0]
 
+    # subject id is a 3-digit number in the filename preceeded by either P, H or D.
+    # H: Healthy, D: Dementia, P: carer/study partner
+    # The default is set to D because all traingin data (wave-1) was D and this provides backward compatibility with old code
+    subject_files = [filename for filename in cwa_files if filename.find(f'{subject_type}{subject_id:03d}') >= 0]
+    
     subject_data = pd.DataFrame()
     for i, filename in enumerate(subject_files):
         print(f'File {i + 1}:')

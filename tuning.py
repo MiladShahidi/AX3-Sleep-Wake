@@ -8,12 +8,12 @@ from keras_tuner_cv.inner_cv import inner_cv
 from keras_tuner_cv.utils import pd_inner_cv_get_result
 from utils.training_utils import CustomTensorBoard
 from sklearn.model_selection import KFold
-from keras_tuner.tuners import Hyperband, RandomSearch
+from keras_tuner.tuners import Hyperband
 from keras_tuner import HyperParameters
 from keras_tuner import Objective
 from config import project_config as config
 import tensorflow as tf
-from utils.metrics import F1Score, PositiveRate, PredictedPositives
+from utils.metrics import F1Score
 from utils.tfrecord_utils import create_dataset
 from utils.helpers import keep_subjects
 from functools import partial
@@ -65,13 +65,20 @@ class HyperModel(keras_tuner.HyperModel):
                 ]}
                 )
 
+        # # # feasibility
+        filters = [8, 5, 3]
+        seq_len = window_size * (3000 // down_sample_by)
+        for filter_size in filters:
+            seq_len = 1 + (seq_len - filter_size) // stride
+            if seq_len <= 0:
+                raise keras_tuner.errors.FailedTrialError(f"Infeasible model with parameters: {hp}")
+        
         return model
     
     def fit(self, hp, model, x, y, **kwargs):
         timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
 
         window_size = hp.get("window_size")
-        # down_sample_by = hp.get("down_sample_by")
 
         datapath = f"{kwargs['datapath']}/window_{window_size}/labelled"
         output_dir = kwargs['output_dir']
@@ -128,13 +135,14 @@ if __name__ == '__main__':
 
     output_dir = 'training_output'
     timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-    search_name = f"search-{timestamp}"
+    # search_name = f"search-{timestamp}"
+    search_name = f"search-2"
     hyper_model = HyperModel()
     
     hp = HyperParameters()
 
-    hp.Choice("down_sample_by", [10, 100, 1000])
-    hp.Choice("num_conv_filters", [32, 64, 128])
+    hp.Choice("down_sample_by", [100, 1000])
+    hp.Choice("num_conv_filters", [32, 64, 128, 256])
     hp.Choice("window_size", [3, 11, 21])
     hp.Choice("num_attention_heads", [1, 2, 4])
     hp.Choice("stride", [1, 2, 3])
@@ -161,16 +169,15 @@ if __name__ == '__main__':
         overwrite=False,  # False resumes previous search
         )
 
-    x_train = np.array(config['subject_ids'])
-    y_train = np.array(config['subject_ids'])
-
+    x_train = np.array([id for id in config['subject_ids'] if id not in config['test_ids']])
+    y_train = np.array([id for id in config['subject_ids'] if id not in config['test_ids']])
+    
     tuner.search(
         x_train,
         y_train,
         datapath=f"data/Tensorflow",
         output_dir=f"{output_dir}/{search_name}",
         save_checkpoints=True,
-        # validation_split=0.2,
         batch_size="full-batch",
         validation_batch_size="full-batch",
         epochs=250,
@@ -178,4 +185,5 @@ if __name__ == '__main__':
         callbacks=[keras.callbacks.TensorBoard(f"{output_dir}/{search_name}/sreach_tb_logs")],
     )
     
-    # df = pd_inner_cv_get_result(tuner)
+    results_df = pd_inner_cv_get_result(tuner)
+    results_df.to_excel(f"{output_dir}/{search_name}/Tuning-{timestamp}.xlsx")
