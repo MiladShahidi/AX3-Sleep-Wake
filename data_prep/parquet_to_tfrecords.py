@@ -164,7 +164,7 @@ if __name__ == '__main__':
                 print('\tWriting TFRecords...')
                 write_to_tfrecord(datasets[dataset_type],
                                   output_paths[dataset_type],
-                                  f'sub_{subject_id:02d}',
+                                  f'sub_{subject_id:03d}',
                                   compression='GZIP' if dataset_type==UNLABELLED else None,  # Unlabelled files are large. Compressing
                                   records_per_shard=10000)
 

@@ -75,11 +75,11 @@ class CNNModel(tf.keras.Model):
             dropout=0.1
         )
 
-        self.variable_multihead_attn = tf.keras.layers.MultiHeadAttention(
-            num_heads=self.num_attention_heads,
-            key_dim=32,  # head size
-            dropout=0.1
-        )
+        # self.variable_multihead_attn = tf.keras.layers.MultiHeadAttention(
+        #     num_heads=self.num_attention_heads,
+        #     key_dim=32,  # head size
+        #     dropout=0.1
+        # )
 
         # self.attn = tf.keras.layers.Attention()
         self.pooling = tf.keras.layers.GlobalAveragePooling1D()

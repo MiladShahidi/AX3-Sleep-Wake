@@ -3,8 +3,13 @@ project_config = {
     'test_ids': [3, 11, 26, 31, 33],
     'AX3_freq': 100,  # Hz
     'seconds_per_epoch': 30,
-    'window_size': 3,
-    'n_cv_folds': 5
+
+    # Hyperparameters
+    'down_sample_by': 1000,
+    'num_conv_filters': 64,
+    'num_attention_heads': 1,
+    'stride': 2,
+    'window_size': 21,
 }
 
 constants = {
