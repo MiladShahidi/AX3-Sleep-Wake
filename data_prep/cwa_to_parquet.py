@@ -1,4 +1,4 @@
-# Pickles are faster to read. I convert the cwa files into pickle so they can be read faster
+# Parquets are faster to read. I convert the cwa files into parquet so they can be read faster
 # We need to read this data often. This one-off conversion speeds up future reads
 
 import os
@@ -43,7 +43,7 @@ if __name__ == '__main__':
                                            round_timestamps=False)
 
         print('Writing to parquet...')
-        features_df.to_parquet(f'{output_path}/AX3_sub_{subject_id:02d}.parquet', compression=None)
+        features_df.to_parquet(f'{output_path}/AX3_sub_{subject_id:03d}.parquet', compression=None)
 
         print(datetime.now() - t1)
         

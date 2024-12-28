@@ -8,7 +8,7 @@ import tensorflow as tf
 import numpy as np
 
 from sklearn.model_selection import BaseCrossValidator
-
+import keras_tuner
 from keras_tuner.engine.tuner import Tuner, maybe_distribute
 from keras_tuner.engine import tuner_utils
 from keras_tuner.engine import trial as trial_module
@@ -52,6 +52,10 @@ def inner_cv(
                 self._verbose = fit_kwargs.get("verbose")
             self.on_search_begin()
             while True:
+                with open('tuning_ctrl.txt', 'r') as f:
+                    if f.readline().lower().find('stop') >= 0:
+                        break
+                
                 trial = self.oracle.create_trial(self.tuner_id)
                 if trial.status == trial_module.TrialStatus.STOPPED:
                     # Oracle triggered exit.
@@ -62,29 +66,41 @@ def inner_cv(
                     continue
 
                 self.on_trial_begin(trial)
-                results = self.run_trial(trial, *fit_args, **fit_kwargs)
-                # `results` is None indicates user updated oracle in `run_trial()`.
-                if results is None:
-                    warnings.warn(
-                        "`Tuner.run_trial()` returned None. It should return one of "
-                        "float, dict, keras.callbacks.History, or a list of one "
-                        "of these types. The use case of calling "
-                        "`Tuner.oracle.update_trial()` in `Tuner.run_trial()` is "
-                        "deprecated, and will be removed in the future.",
-                        DeprecationWarning,
-                        stacklevel=2,
-                    )
-                else:
-                    metrics = tuner_utils.convert_to_metrics_dict(
-                        results, self.oracle.objective,  # "Tuner.run_trial()"
-                    )
-                    metrics.update(get_metrics_std_dict(results))
-                    self.oracle.update_trial(
-                        trial.trial_id,
-                        metrics,
-                    )
+                
+                try:
+                    results = self.run_trial(trial, *fit_args, **fit_kwargs)
+                    # `results` is None indicates user updated oracle in `run_trial()`.
+                    if results is None:
+                        warnings.warn(
+                            "`Tuner.run_trial()` returned None. It should return one of "
+                            "float, dict, keras.callbacks.History, or a list of one "
+                            "of these types. The use case of calling "
+                            "`Tuner.oracle.update_trial()` in `Tuner.run_trial()` is "
+                            "deprecated, and will be removed in the future.",
+                            DeprecationWarning,
+                            stacklevel=2,
+                        )
+                    else:
+                        metrics = tuner_utils.convert_to_metrics_dict(
+                            results, self.oracle.objective,  # "Tuner.run_trial()"
+                        )
+                        metrics.update(get_metrics_std_dict(results))
+                        self.oracle.update_trial(
+                            trial.trial_id,
+                            metrics,
+                        )
 
-                trial.status = trial_module.TrialStatus.COMPLETED
+                    trial.status = trial_module.TrialStatus.COMPLETED
+                
+                except Exception as e:
+                    if isinstance(e, keras_tuner.errors.FatalError):
+                        raise e
+                    if isinstance(e, keras_tuner.errors.FailedTrialError):
+                        print(e)
+                        trial.status = trial_module.TrialStatus.FAILED
+                    else:
+                        trial.status = trial_module.TrialStatus.INVALID
+
                 self.on_trial_end(trial)
             self.on_search_end()
 

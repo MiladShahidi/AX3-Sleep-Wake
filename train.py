@@ -40,7 +40,7 @@ def train_model(
         datapath,
         filters=[
             partial(keep_subjects, subject_ids=train_val_ids),
-            lambda x, y: x['central_epoch_id'] % 8 != 0
+            lambda x, y: x['central_epoch_id'] % 10 != 0
             ],
         batch_size=128
         )
@@ -49,7 +49,7 @@ def train_model(
         datapath,
         filters=[
             partial(keep_subjects, subject_ids=train_val_ids),
-            lambda x, y: x['central_epoch_id'] % 8 == 0
+            lambda x, y: x['central_epoch_id'] % 10 == 0
             ],
         batch_size=100
         )
@@ -65,7 +65,10 @@ def train_model(
     # model = NewCNNModel(down_sample_by=60, window_size=train_config['window_size'])
     model = CNNModel(
         down_sample_by=train_config['down_sample_by'],
-        num_conv_filters=32,
+        num_conv_filters=train_config['num_conv_filters'],
+        num_attention_heads=train_config['num_attention_heads'],
+        stride=train_config['stride'],
+        window_size=train_config['window_size'],
         )
 
     model.compile(
@@ -86,10 +89,10 @@ def train_model(
     model.fit(
         train_data,
         # class_weight={0: 0.6, 1: 0.4},
-        epochs=1,
-        steps_per_epoch=2,
+        epochs=1000,
+        steps_per_epoch=100,
         validation_data=val_data,
-        validation_steps=2,
+        validation_steps=100,
         callbacks=callbacks
         )
 
@@ -112,8 +115,6 @@ def training_main(train_config):
     }, index=[0])
     training_log.to_csv(logs_filename, mode='a', header=not os.path.isfile(logs_filename), index=False)
  
-    training_mode = 'CV'  # Set this to CV for cross validation. Otherwise a single model will be trained on all training data
-
     print('*'*20)
     print(f'Model Timestamp: {timestamp}')
     print('*'*20)
@@ -129,97 +130,75 @@ def training_main(train_config):
         psg_labels = pd.concat([psg_labels, subject_labels])
 
     metric_fns = {
-        'F-1': f1_score,
+        'F-1': lambda y_true, y_pred: f1_score(y_true, y_pred, average='macro'),
         'Recall': recall_score,
         'Precision': precision_score,
         "Cohen's Kappa": lambda y_true, y_pred: cohen_kappa_score(y1=y_true, y2=y_pred),
         'Specificity': lambda y_true, y_pred: classification_report(y_true=y_true, y_pred=y_pred, output_dict=True, labels=[0, 1])['0']['precision']
     }
-    os.makedirs(cv_preds_path)
-    metrics_df = pd.DataFrame()
-    
-    kfold_splitter = KFold(train_config['n_cv_folds'])
 
-    if training_mode.upper() == 'CV':
-        split_generator = kfold_splitter.split(all_subject_ids)
-    else:  # Traing a single model on all training data
-        split_generator = [(np.arange(0, len(all_subject_ids)), [])]
+    # test_ids = train_config['test_ids']
+    test_ids = []
+    train_val_ids = [id for id in train_config['subject_ids'] if id not in test_ids]
 
-    for fold_number, (train_index, test_index) in enumerate(split_generator):
+    print('*'*80)
+    print(f'Test subjects: {test_ids}')
+    print('-'*40)
+
+    model_nickname = f"best_on_all_{timestamp}"
+
+    model = train_model(
+        datapath=datapath,
+        train_config=train_config,
+        train_val_ids=train_val_ids,
+        output_dir=output_dir,
+        model_nickname=model_nickname,
+        save_checkpoints=True,
+        )
+
+    if len(test_ids) > 0:
+        metrics = {metric_name: [] for metric_name in metric_fns.keys()}  # Placeholder for metric values
+
+        test_data = create_dataset(datapath,
+                                filters=[partial(keep_subjects, subject_ids=test_ids)],
+                                repeat=False, shuffle=False, batch_size=100)
+
+        print('#-'*80)
+        print(model.evaluate(test_data))
+        print('#-'*80)
+        pred = model.predict(test_data)
+
+        pred['pred'] = np.round(np.squeeze(pred['pred']))  # Threshold = 0.5
+        pred = pd.DataFrame(pred)
+        pred['epoch_ts'] = pd.to_datetime(pred['epoch_ts'].str.decode("utf-8"))
+
+        test_fold_labels = psg_labels[psg_labels['subject_id'].isin(test_ids)]
+        labels_pred_df = pd.merge(
+            left=test_fold_labels,
+            right=pred,
+            on=['subject_id', 'epoch_ts'],
+            how='left'
+        )
+        print('^*'*40)
+        print(f"Label-Prediction mismatch = {round(labels_pred_df['pred'].isna().mean() * 100, 4)}")
+        print('^*'*40)
+        labels_pred_df = labels_pred_df.dropna()  # ToDo: Fix windowing for the first and last epochs so we won't have to dropna here
+
+        # labels_pred_df.to_csv(f'{cv_preds_path}/{model_nickname}.csv', index=False)
         
-        train_val_ids = all_subject_ids[train_index]
-        test_ids = all_subject_ids[test_index]
+        for metric_name, metric_fn in metric_fns.items():
+            metric_value = metric_fn(y_pred=labels_pred_df['pred'], y_true=labels_pred_df['PSG Sleep'])
+            metrics[metric_name].append(round(metric_value * 100, 2))
+        
+        metrics_df = pd.DataFrame(metrics)
+        metrics_df.insert(1, 'Test Subjects', " - ".join([str(id) for id in test_ids]))
 
-        print('*'*80)
-        print(f'Starting Fold {fold_number+1}/{train_config["n_cv_folds"]}')
-        print(f'Test subjects: {test_ids}')
-        print('-'*40)
-
-        if training_mode.upper() == 'CV':
-            model_nickname = f"model_excl_{np.min(test_ids):02d}_to_{np.max(test_ids):02d}"
-        else:
-            model_nickname = f'{timestamp}-CNN-Win_{train_config["window_size"]}-Freq_{100//train_config["down_sample_by"]}'
-
-        model = train_model(
-            datapath=datapath,
-            train_config=train_config,
-            train_val_ids=train_val_ids,
-            output_dir=output_dir,
-            model_nickname=model_nickname,
-            save_checkpoints=True
-            # save_checkpoints=(len(test_ids) == 0)  # Don't save checkpoints during CV
-            )
-
-        # Predicting for the test fold during cross validation.
-        # Doesn't apply if training one model for all data (i.e. tarining_mode != CV)
-        if training_mode.upper() == 'CV':
-            metrics = {metric_name: [] for metric_name in metric_fns.keys()}  # Placeholder for metric values
-
-            test_data = create_dataset(datapath,
-                                    filters=[partial(keep_subjects, subject_ids=test_ids)],
-                                    repeat=False, shuffle=False, batch_size=100)
-
-            print('#-'*80)
-            print(model.evaluate(test_data))
-            print('#-'*80)
-            pred = model.predict(test_data)
-
-            pred['pred'] = np.round(np.squeeze(pred['pred']))  # Threshold = 0.5
-            pred = pd.DataFrame(pred)
-            pred['epoch_ts'] = pd.to_datetime(pred['epoch_ts'].str.decode("utf-8"))
-
-            test_fold_labels = psg_labels[psg_labels['subject_id'].isin(test_ids)]
-            labels_pred_df = pd.merge(
-                left=test_fold_labels,
-                right=pred,
-                on=['subject_id', 'epoch_ts'],
-                how='left'
-            )
-            print('^*'*40)
-            print(f"Label-Prediction mismatch = {round(labels_pred_df['pred'].isna().mean() * 100, 4)}")
-            print('^*'*40)
-            labels_pred_df = labels_pred_df.dropna()  # ToDo: Fix windowing for the first and last epochs so we won't have to dropna here
-
-            labels_pred_df.to_csv(f'{cv_preds_path}/{model_nickname}.csv', index=False)
-            
-            # for metric_name, metric_fn in metric_fns.items():
-            #     metric_value = metric_fn(y_pred=labels_pred_df['pred'], y_true=labels_pred_df['PSG Sleep'])
-            #     metrics[metric_name].append(round(metric_value * 100, 2))
-            
-            # fold_metrics = pd.DataFrame(metrics)
-            # fold_metrics.insert(0, 'Fold', fold_number)
-            # fold_metrics.insert(1, 'Test Subjects', f"{np.min(test_ids):02d} to {np.max(test_ids):02d}")
-
-            # metrics_df = pd.concat([metrics_df, fold_metrics])
-
-            # metrics_df.to_csv(f'cv_metrics.csv', index=False)  # Overwrites to update every time
+        metrics_df.to_csv(f'metrics.csv', index=False)  # Overwrites to update every time
 
 
 if __name__ == '__main__':
-    # DS: 2, 10, 100, 1000
-    # Freq: 50, 10, 1, 0.1
-    down_sample_list = [10]
-    for ds in down_sample_list:
-        train_config = {k: v for k, v in config.items()}
-        train_config['down_sample_by'] = ds
-        training_main(train_config)
+    # down_sample_list = [10]
+
+    # for ds in down_sample_list:
+    # train_config['down_sample_by'] = ds
+    training_main(train_config=config)
