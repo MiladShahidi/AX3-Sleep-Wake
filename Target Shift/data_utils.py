@@ -45,7 +45,7 @@ def read_PSG_labels(path, subject_id):
     return labels_df
 
 
-def read_sleep_dairies(path):
+def read_sleep_diaries(path):
     sleep_diary_df = pd.DataFrame()
     for filename in [f for f in os.listdir(path) if f.endswith('csv')]:
         if filename.find('nap') >= 0:

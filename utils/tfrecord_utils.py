@@ -239,7 +239,9 @@ def write_to_tfrecord(data, path, filename_prefix, compression, records_per_shar
         shard_boundaries.append(len(data))  # in case the number of records is not an exact multiple of shard size
     num_shards = len(shard_boundaries) - 1
     for i, (shard_start, shard_end) in enumerate(zip(shard_boundaries, shard_boundaries[1:])):
-        os.makedirs(path, exist_ok=True)
+        if not path.startswith('gs://'):
+            os.makedirs(path, exist_ok=True)
+        
         shard_numbering = f'_{i+1}_of_{num_shards}' if num_shards > 1 else ''
         
         filename = filename_prefix + shard_numbering + '.tfrecord'
@@ -311,12 +313,13 @@ def reshape_features(context, features):
     # [[0, 0], [1, 0], [0, 0]] means only insert 1 pad in axis=1 and before the values
     norm_diff = tf.pad(norm_diff, [[0, 0], [1, 0], [0, 0]])  # pad the diff at t=0 to make it the same shape again
 
+    # rnd_gen = tf.random.get_global_generator()
     feature_list = [
         tf.expand_dims(features['X'], axis=-1),
         tf.expand_dims(features['Y'], axis=-1),
         tf.expand_dims(features['Z'], axis=-1),
-        tf.expand_dims(features['Temp'], axis=-1),
         triaxial_l2_norm,
+        tf.expand_dims(features['Temp'], axis=-1) #+ tf.random.normal(tf.shape(tf.expand_dims(features['Temp'], axis=-1))) * 10,
         # tf.abs(norm_diff)
     ]
 
@@ -340,7 +343,7 @@ def reshape_features(context, features):
         return features
 
 
-def create_dataset(path, compressed=False, filters=None, has_labels=True, batch_size=None, repeat=True, shuffle=True):
+def create_dataset(path, compressed=False, filters=None, maps=None, has_labels=True, batch_size=None, repeat=True, shuffle=True):
     
     if tf.io.gfile.exists(path):  # This means it's either a single file name or a directory, not a pattern
         
@@ -357,11 +360,15 @@ def create_dataset(path, compressed=False, filters=None, has_labels=True, batch_
     dataset = tf.data.TFRecordDataset(files, compression_type='GZIP' if compressed else None)
 
     dataset = dataset.map(partial(parse_tfrecord, has_labels=has_labels)).map(reshape_features)
-
+    
     if filters is not None:
       for filter in filters:
         dataset = dataset.filter(filter)
       
+    if maps is not None:
+        for map_fn in maps:
+            dataset = dataset.map(map_fn)
+
     if shuffle:
       shuffle_buffer_size = 10000 if batch_size is None else batch_size * 10
       dataset = dataset.shuffle(buffer_size=shuffle_buffer_size, reshuffle_each_iteration=True)
