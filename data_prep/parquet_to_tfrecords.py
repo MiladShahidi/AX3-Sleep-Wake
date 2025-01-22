@@ -25,20 +25,23 @@ from utils.tfrecord_utils import pandas_to_tf_seq_example_list, write_to_tfrecor
 
 def join_features_and_labels(features_df, labels_df):
         
-    subject_data = pd.merge(
-        left=features_df,
-        right=labels_df,
-        left_on='epoch_ts',
-        right_on='epoch_ts',
-        how='left'
-        ).sort_values('epoch_ts')
+    if labels_df is not None:
+        subject_data = pd.merge(
+            left=features_df,
+            right=labels_df,
+            left_on='epoch_ts',
+            right_on='epoch_ts',
+            how='left'
+            ).sort_values('epoch_ts')
 
-    label_fltr = ~subject_data['label'].isna()
-    
-    labelled_df = subject_data[label_fltr]
-    unlabelled_df = subject_data[~label_fltr]
+        label_fltr = ~subject_data['label'].isna()
+        
+        labelled_df = subject_data[label_fltr]
+        unlabelled_df = subject_data[~label_fltr]
 
-    return labelled_df, unlabelled_df.drop(columns=['label'])
+        return labelled_df, unlabelled_df.drop(columns=['label'])
+    else:  # This is a backward-compatible fix
+        return None, features_df  # No labels provided
 
 
 def create_windowed_df(df, window_size):
@@ -122,7 +125,9 @@ if __name__ == '__main__':
             # assert len(os.listdir(output_paths[dataset_type])) == 0, f"Output directory is not empty ({dataset_type})."  # Prevents overwriting
 
     for subject_id in config['subject_ids']:
-        
+        # if subject_id != 28:
+        #     continue
+
         start_time = datetime.now()
 
         print(f'Subject ID: {subject_id}')
@@ -136,6 +141,7 @@ if __name__ == '__main__':
         psg_labels_df = psg_labels_df.rename(columns={'PSG Sleep': 'label'})
 
         print('Joining features and labels...')
+        # labelled_data, unlabelled_data = join_features_and_labels(features_df, labels_df=None)
         labelled_data, unlabelled_data = join_features_and_labels(features_df, psg_labels_df)
 
         datasets = {
@@ -151,7 +157,7 @@ if __name__ == '__main__':
                 datasets[dataset_type]['epoch_ts'] = datasets[dataset_type]['epoch_ts'].astype('str')  # TF Example, etc. don't support datetime
 
                 datasets[dataset_type] = create_windowed_df(datasets[dataset_type], window_size=WINDOW_SIZE)
-
+                                    
                 # In principle, it's not necessary to group by all of the following
                 # But the converter function converts the values of groupby columns as scalars (not lists)
                 # So, we group by all constant columns so that they'll be converted into scalars
@@ -166,7 +172,7 @@ if __name__ == '__main__':
                                   output_paths[dataset_type],
                                   f'sub_{subject_id:03d}',
                                   compression='GZIP' if dataset_type==UNLABELLED else None,  # Unlabelled files are large. Compressing
-                                  records_per_shard=10000)
+                                  records_per_shard=100000)
 
         print('Took ', datetime.now() - start_time)
         print('*'*80)

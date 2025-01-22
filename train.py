@@ -15,11 +15,13 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import KFold
 from utils.training_utils import CustomTensorBoard
-from config import project_config as config
-from models import CNNModel
+from config import project_config as config, constants
+from models import CNNModel, build_functional_model
 from utils.tfrecord_utils import create_dataset
 from utils.helpers import keep_subjects
 
+WAKE_LABEL = constants['WAKE']
+SLEEP_LABEL = constants['SLEEP']
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress warnings and debug info mesasages
 
@@ -42,6 +44,10 @@ def train_model(
             partial(keep_subjects, subject_ids=train_val_ids),
             lambda x, y: x['central_epoch_id'] % 10 != 0
             ],
+        maps=[
+            # lambda x, y: (x['features'], y),
+            # lambda x, y: (tf.expand_dims(x, -1), y)  # Add a dummy dimension to mimick color channel for ScoreCam
+            ],
         batch_size=128
         )
 
@@ -50,6 +56,10 @@ def train_model(
         filters=[
             partial(keep_subjects, subject_ids=train_val_ids),
             lambda x, y: x['central_epoch_id'] % 10 == 0
+            ],
+        maps=[
+            # lambda x, y: (x['features'], y),
+            # lambda x, y: (tf.expand_dims(x, -1), y)  # Add a dummy dimension to mimick color channel for ScoreCam
             ],
         batch_size=100
         )
@@ -62,7 +72,6 @@ def train_model(
     if save_checkpoints:
         callbacks += [tf.keras.callbacks.ModelCheckpoint(f'{saved_models_dir}', monitor='val_loss', save_best_only=True)]
 
-    # model = NewCNNModel(down_sample_by=60, window_size=train_config['window_size'])
     model = CNNModel(
         down_sample_by=train_config['down_sample_by'],
         num_conv_filters=train_config['num_conv_filters'],
@@ -71,12 +80,19 @@ def train_model(
         window_size=train_config['window_size'],
         )
 
+    # model = build_functional_model(
+    #     down_sample_by=train_config['down_sample_by'],
+    #     num_conv_filters=train_config['num_conv_filters'],
+    #     num_attention_heads=train_config['num_attention_heads'],
+    #     stride=train_config['stride'],
+    #     window_size=train_config['window_size'],
+    #     )
+
     model.compile(
         optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-3),  # Legacy is because the current one runs slow on M1/M2 macs
+        # # # subclassed model
         loss={'pred': tf.keras.losses.BinaryCrossentropy(name='Loss')},
-        # loss={'pred': tf.keras.losses.BinaryFocalCrossentropy(name='Loss')},
         metrics={'pred': [
-            # tf.keras.metrics.BinaryAccuracy(name='Accuracy'),
             tf.keras.metrics.Recall(name='Recall'),
             tf.keras.metrics.Precision(name='Precision'),
             F1Score(average='macro'),
@@ -84,15 +100,25 @@ def train_model(
             PositiveRate(name='PositiveRate'),
             PredictedPositives(name='PredictedPositives')
             ]}
-            )
+        # # # functional model
+        # loss=tf.keras.losses.BinaryCrossentropy(name='Loss'),
+        # metrics=[
+        #     tf.keras.metrics.Recall(name='Recall'),
+        #     tf.keras.metrics.Precision(name='Precision'),
+        #     F1Score(average='macro'),
+        #     F1Score(average='binary'),
+        #     PositiveRate(name='PositiveRate'),
+        #     PredictedPositives(name='PredictedPositives')
+        #     ]
+        )
 
     model.fit(
         train_data,
-        # class_weight={0: 0.6, 1: 0.4},
+        class_weight=train_config.get('class_weights', None),
         epochs=1000,
         steps_per_epoch=100,
         validation_data=val_data,
-        validation_steps=100,
+        validation_steps=40,
         callbacks=callbacks
         )
 
@@ -108,12 +134,12 @@ def training_main(train_config):
     cv_preds_path = f'Results/Predictions/CV/{timestamp}'
     logs_filename = 'training_logs.csv'
 
-    training_log = pd.DataFrame({
-        'timestamp': timestamp,
-        'Window': train_config['window_size'],
-        'Freq': 100 // train_config['down_sample_by'],
-    }, index=[0])
-    training_log.to_csv(logs_filename, mode='a', header=not os.path.isfile(logs_filename), index=False)
+    # training_log = pd.DataFrame({
+    #     'timestamp': timestamp,
+    #     'Window': train_config['window_size'],
+    #     'Freq': 100 // train_config['down_sample_by'],
+    # }, index=[0])
+    # training_log.to_csv(logs_filename, mode='a', header=not os.path.isfile(logs_filename), index=False)
  
     print('*'*20)
     print(f'Model Timestamp: {timestamp}')
@@ -137,15 +163,15 @@ def training_main(train_config):
         'Specificity': lambda y_true, y_pred: classification_report(y_true=y_true, y_pred=y_pred, output_dict=True, labels=[0, 1])['0']['precision']
     }
 
-    # test_ids = train_config['test_ids']
-    test_ids = []
+    test_ids = train_config['test_ids']
+    # test_ids = []
     train_val_ids = [id for id in train_config['subject_ids'] if id not in test_ids]
 
     print('*'*80)
     print(f'Test subjects: {test_ids}')
     print('-'*40)
 
-    model_nickname = f"best_on_all_{timestamp}"
+    model_nickname = f"fn_best_on_all_{timestamp}"
 
     model = train_model(
         datapath=datapath,
@@ -163,9 +189,9 @@ def training_main(train_config):
                                 filters=[partial(keep_subjects, subject_ids=test_ids)],
                                 repeat=False, shuffle=False, batch_size=100)
 
-        print('#-'*80)
-        print(model.evaluate(test_data))
-        print('#-'*80)
+        # print('#-'*80)
+        # print(model.evaluate(test_data))
+        # print('#-'*80)
         pred = model.predict(test_data)
 
         pred['pred'] = np.round(np.squeeze(pred['pred']))  # Threshold = 0.5
@@ -193,12 +219,19 @@ def training_main(train_config):
         metrics_df = pd.DataFrame(metrics)
         metrics_df.insert(1, 'Test Subjects', " - ".join([str(id) for id in test_ids]))
 
-        metrics_df.to_csv(f'metrics.csv', index=False)  # Overwrites to update every time
+        metrics_df.to_csv(f'metrics {timestamp}.csv', index=False)  # Overwrites to update every time
+
+    return model
 
 
 if __name__ == '__main__':
-    # down_sample_list = [10]
+    # for wake_freq in [0.35, 0.1]:  # 0,35 is the actual freq
+    #     sleep_freq = 1 - wake_freq
+    #     class_weights = {SLEEP_LABEL: 0.5 * (1/sleep_freq), WAKE_LABEL: 0.5 * (1/wake_freq)}
 
-    # for ds in down_sample_list:
-    # train_config['down_sample_by'] = ds
+    #     train_config = {k: v for k, v in config.items()}
+    #     train_config['class_weights'] = class_weights
+        
+    #     model = training_main(train_config=train_config)
+
     training_main(train_config=config)

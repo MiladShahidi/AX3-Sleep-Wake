@@ -1,10 +1,18 @@
+import pickle
 import pandas as pd
+import numpy as np
 import os
+import re
 import sys
+from functools import reduce
 from datetime import datetime
+import subprocess
+import datetime as dt
+import string
+
 
 here = os.path.dirname(__file__)
-sys.path.append(os.path.join(here, '../..'))
+sys.path.append(os.path.join(here, '..'))
 
 from utils.data_utils import (
     read_parquet_AX3_epochs,
@@ -12,12 +20,19 @@ from utils.data_utils import (
 )
 from utils.helpers import list_all_subject_ids
 
+
 # This enables importing modules from the parent directory
 parent = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(parent)
 
 from utils.tfrecord_utils import pandas_to_tf_seq_example_list, write_to_tfrecord
     
+
+def log_to_file(filename, msg):
+    f = open(filename, "a")
+    f.write(f"{dt.datetime.strftime(dt.datetime.now(), format='%d/%m/%y %H:%M:%S')} {msg}\n ")
+    f.close()
+
 
 def join_features_and_labels(features_df, labels_df):
         
@@ -93,11 +108,16 @@ if __name__ == '__main__':
     
     WINDOW_SIZE = 21
 
-    project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
-    parquet_epoch_data_path = f'{project_root}/data/Wave-2/Parquet/HP'
-    labels_path = f'{project_root}/data/PSG-Labels'
-    output_path = f"{project_root}/data/Wave-2/Tensorflow/window_{WINDOW_SIZE}"
+    # project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
+    parquet_epoch_data_path = "gs://sleep-wake/data/Wave-2/Parquet"
     
+    # labels_path = f'{project_root}/data/PSG-Labels'
+    labels_path = "gs://sleep-wake/data/PSG-Labels"
+    local_output_path = "."
+    output_path = f"gs://sleep-wake/data/Wave-2/Tensorflow/window_{WINDOW_SIZE}"
+    
+    log_filename = "log.txt"
+
     # Constants for naming stuff
     LABELLED = 'labelled'
     UNLABELLED = 'unlabelled'
@@ -117,7 +137,8 @@ if __name__ == '__main__':
 
     for dataset_type in write_flag.keys():
         if write_flag[dataset_type]:
-            os.makedirs(output_paths[dataset_type], exist_ok=True)
+            pass
+            # os.makedirs(output_paths[dataset_type], exist_ok=True)
             # assert len(os.listdir(output_paths[dataset_type])) == 0, f"Output directory is not empty ({dataset_type})."  # Prevents overwriting
 
     subject_ids = list_all_subject_ids(parquet_epoch_data_path, 'parquet')
@@ -126,8 +147,11 @@ if __name__ == '__main__':
     for subject_id in subject_ids:
         
         if subject_id in done_files:
-            print(f"Skipping {subject_id}")
+            log_to_file(log_filename, f"Skipping {subject_id}")
             continue
+
+        # if subject_id in ["H005", "H006"]:
+        #     continue
 
         start_time = datetime.now()
 
@@ -135,29 +159,33 @@ if __name__ == '__main__':
         # But it's a backward-compatible way to get this to work with old code
         prefix = subject_id[0]
         id = int(subject_id[1:])
-
-        if prefix == 'D':
-            continue
         
-        print(f'Subject ID: {subject_id}')
-        print('-' * 20)
+        log_to_file(log_filename, f'Subject ID: {subject_id}')
+        log_to_file(log_filename, '-' * 20)
 
-        print('Reading Parquet recordings...')
+        log_to_file(log_filename, 'Reading Parquet recordings...')
         features_df = read_parquet_AX3_epochs(parquet_epoch_data_path, subject_id=id, subject_prefix=prefix, round_timestamps=True)
 
         try:
-            print('Reading PSG labels...')  # These only exist for wave where wubsject ids didn't have the prefix letter
+            log_to_file(log_filename, 'Reading PSG labels...')  # These only exist for wave where wubsject ids didn't have the prefix letter
             psg_labels_df = read_PSG_labels(labels_path, subject_id=id)
             psg_labels_df = psg_labels_df.rename(columns={'PSG Sleep': 'label'})
         except FileNotFoundError:
             psg_labels_df = None
-            print(f"No labels found for {subject_id}")
+            log_to_file(log_filename, f"No labels found for {subject_id}")
         except Exception as e:
             raise e
 
-        print('Joining features and labels...')
-        labelled_data, unlabelled_data = join_features_and_labels(features_df, labels_df=None)
-        # labelled_data, unlabelled_data = join_features_and_labels(features_df, psg_labels_df)
+        log_to_file(log_filename, 'Joining features and labels...')
+        # labelled_data, unlabelled_data = join_features_and_labels(features_df, labels_df=None)
+        log_to_file(log_filename, f"{len(features_df)} rows in features_df")
+        labelled_data, unlabelled_data = join_features_and_labels(features_df, psg_labels_df)
+
+        log_to_file(log_filename, f"{len(unlabelled_data)} rows in unlabelled_data")
+        if labelled_data is not None:
+            log_to_file(log_filename, f"{len(labelled_data)} rows in labelled_data")
+        else:
+            log_to_file(log_filename, "labelled_data is empty")
 
         datasets = {
             LABELLED: labelled_data,
@@ -168,26 +196,40 @@ if __name__ == '__main__':
             if write_flag[dataset_type]:
                 print(f'Processing {dataset_type} data...')
                 
-                print('\tConverting to TFRecords...')
+                log_to_file(log_filename, '\tCreating windowed data...')
                 datasets[dataset_type]['epoch_ts'] = datasets[dataset_type]['epoch_ts'].astype('str')  # TF Example, etc. don't support datetime
 
-                datasets[dataset_type] = create_windowed_df(datasets[dataset_type], window_size=WINDOW_SIZE)
+                n_chunks = 3
+                breakpoints = np.round(np.linspace(0, len(datasets[dataset_type]) + 1, n_chunks+1))
+                for chunk, (from_i, to_i) in enumerate(zip(breakpoints[:-1], breakpoints[1:])):
+                    log_to_file(log_filename, f"Chunk {chunk+1}/{n_chunks}: {from_i} - {to_i-1}")
+                    chunk_df = datasets[dataset_type].loc[from_i:(to_i-1), :].copy(deep=True)
+                    
+                    chunk_df = create_windowed_df(chunk_df, window_size=WINDOW_SIZE)
 
-                # In principle, it's not necessary to group by all of the following
-                # But the converter function converts the values of groupby columns as scalars (not lists)
-                # So, we group by all constant columns so that they'll be converted into scalars
-                groupby_cols = ['subject_id', 'central_epoch_id', 'central_epoch_ts']
-                if dataset_type == LABELLED:
-                    groupby_cols += ['label']
-                
-                datasets[dataset_type] = pandas_to_tf_seq_example_list(datasets[dataset_type], groupby_cols)
+                    # In principle, it's not necessary to group by all of the following
+                    # But the converter function converts the values of groupby columns as scalars (not lists)
+                    # So, we group by all constant columns so that they'll be converted into scalars
+                    groupby_cols = ['subject_id', 'central_epoch_id', 'central_epoch_ts']
+                    if dataset_type == LABELLED:
+                        groupby_cols += ['label']
+                    
+                    log_to_file(log_filename, '\tConverting to TFRecords...')
+                    chunk_df = pandas_to_tf_seq_example_list(chunk_df, groupby_cols)
 
-                print('\tWriting TFRecords...')
-                write_to_tfrecord(datasets[dataset_type],
-                                  output_paths[dataset_type],
-                                  f'sub_{prefix}{id:03d}',
-                                  compression='GZIP' if dataset_type==UNLABELLED else None,  # Unlabelled files are large. Compressing
-                                  records_per_shard=10000)
+                    log_to_file(log_filename, f'\tWriting TFRecords...')
+                    
+                    write_to_tfrecord(
+                        chunk_df,
+                        local_output_path,
+                        f'sub_{prefix}{id:03d}_{string.ascii_lowercase[chunk]}_',
+                        compression='GZIP' if dataset_type==UNLABELLED else None,  # Unlabelled files are large. Compressing
+                        records_per_shard=10000
+                        )
 
-        print('Took ', datetime.now() - start_time)
-        print('*'*80)
+                upload_cmd = f"gcloud storage mv *.tfrecord.gz {output_paths[dataset_type]}/"
+                subprocess.run(upload_cmd.split(" "))
+
+        log_to_file(log_filename, f'Took {datetime.now() - start_time}')
+        log_to_file(log_filename, '*'*80)
+        break

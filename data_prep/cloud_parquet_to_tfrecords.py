@@ -1,16 +1,20 @@
 import pandas as pd
+import numpy as np
 import os
+import re
 import sys
+from functools import reduce
 from datetime import datetime
+import subprocess
 
 here = os.path.dirname(__file__)
-sys.path.append(os.path.join(here, '../..'))
+sys.path.append(os.path.join(here, '..'))
 
 from utils.data_utils import (
     read_parquet_AX3_epochs,
     read_PSG_labels
 )
-from utils.helpers import list_all_subject_ids
+from config import project_config as config
 
 # This enables importing modules from the parent directory
 parent = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -91,12 +95,16 @@ def create_windowed_df(df, window_size):
 
 if __name__ == '__main__':
     
-    WINDOW_SIZE = 21
+    WINDOW_SIZE = 1
 
     project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
-    parquet_epoch_data_path = f'{project_root}/data/Wave-2/Parquet/HP'
-    labels_path = f'{project_root}/data/PSG-Labels'
-    output_path = f"{project_root}/data/Wave-2/Tensorflow/window_{WINDOW_SIZE}"
+    # parquet_epoch_data_path = f'{project_root}/data/Parquet'
+    parquet_epoch_data_path = "gs://sleep-wake/data"
+    
+    # labels_path = f'{project_root}/data/PSG-Labels'
+    labels_path = "gs://sleep-wake/data/PSG-Labels"
+    local_output_path = "."
+    output_path = f"gs://sleep-wake/data/tf"
     
     # Constants for naming stuff
     LABELLED = 'labelled'
@@ -120,40 +128,19 @@ if __name__ == '__main__':
             os.makedirs(output_paths[dataset_type], exist_ok=True)
             # assert len(os.listdir(output_paths[dataset_type])) == 0, f"Output directory is not empty ({dataset_type})."  # Prevents overwriting
 
-    subject_ids = list_all_subject_ids(parquet_epoch_data_path, 'parquet')
-    done_files = list_all_subject_ids(output_path + '/unlabelled', 'tfrecord.gz')
-
-    for subject_id in subject_ids:
-        
-        if subject_id in done_files:
-            print(f"Skipping {subject_id}")
-            continue
+    for subject_id in config['subject_ids']:
 
         start_time = datetime.now()
 
-        # This may seem twisted and unneccessary
-        # But it's a backward-compatible way to get this to work with old code
-        prefix = subject_id[0]
-        id = int(subject_id[1:])
-
-        if prefix == 'D':
-            continue
-        
         print(f'Subject ID: {subject_id}')
         print('-' * 20)
 
         print('Reading Parquet recordings...')
-        features_df = read_parquet_AX3_epochs(parquet_epoch_data_path, subject_id=id, subject_prefix=prefix, round_timestamps=True)
+        features_df = read_parquet_AX3_epochs(parquet_epoch_data_path, subject_id, round_timestamps=True)
 
-        try:
-            print('Reading PSG labels...')  # These only exist for wave where wubsject ids didn't have the prefix letter
-            psg_labels_df = read_PSG_labels(labels_path, subject_id=id)
-            psg_labels_df = psg_labels_df.rename(columns={'PSG Sleep': 'label'})
-        except FileNotFoundError:
-            psg_labels_df = None
-            print(f"No labels found for {subject_id}")
-        except Exception as e:
-            raise e
+        # print('Reading PSG labels...')
+        # psg_labels_df = read_PSG_labels(labels_path, subject_id)
+        # psg_labels_df = psg_labels_df.rename(columns={'PSG Sleep': 'label'})
 
         print('Joining features and labels...')
         labelled_data, unlabelled_data = join_features_and_labels(features_df, labels_df=None)
@@ -184,10 +171,15 @@ if __name__ == '__main__':
 
                 print('\tWriting TFRecords...')
                 write_to_tfrecord(datasets[dataset_type],
-                                  output_paths[dataset_type],
-                                  f'sub_{prefix}{id:03d}',
+                                  local_output_path,
+                                  f'sub_{subject_id:03d}',
                                   compression='GZIP' if dataset_type==UNLABELLED else None,  # Unlabelled files are large. Compressing
                                   records_per_shard=10000)
+                
+                upload_cmd = f"gcloud storage mv *.tfrecord.gz {output_paths[dataset_type]}/"
+                subprocess.run(upload_cmd.split(" "))
 
         print('Took ', datetime.now() - start_time)
         print('*'*80)
+
+        break

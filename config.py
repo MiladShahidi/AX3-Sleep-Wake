@@ -5,7 +5,7 @@ project_config = {
     'seconds_per_epoch': 30,
 
     # Hyperparameters
-    'down_sample_by': 1000,
+    'down_sample_by': None,
     'num_conv_filters': 64,
     'num_attention_heads': 1,
     'stride': 2,

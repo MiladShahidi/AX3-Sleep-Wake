@@ -96,7 +96,7 @@ def create_windowed_df(df, window_size):
 
 if __name__ == '__main__':
     
-    WINDOW_SIZE = 1
+    WINDOW_SIZE = 21
 
     project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
     parquet_epoch_data_path = f'{project_root}/data/Parquet'
@@ -127,6 +127,7 @@ if __name__ == '__main__':
             # assert len(os.listdir(output_paths[dataset_type])) == 0, f"Output directory is not empty ({dataset_type})."  # Prevents overwriting
 
     for subject_id in config['subject_ids']:
+        
         start_time = datetime.now()
 
         print(f'Subject ID: {subject_id}')

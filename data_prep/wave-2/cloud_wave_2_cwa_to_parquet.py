@@ -4,6 +4,8 @@
 import os
 import sys
 from datetime import datetime
+import re
+import subprocess
 
 
 here = os.path.dirname(__file__)
@@ -11,15 +13,17 @@ sys.path.append(os.path.join(here, '../..'))
 
 from utils.data_utils import read_AX3_cwa, process_AX3_raw_data
 from utils.helpers import list_all_subject_ids
+from config import project_config as config
 
 
 if __name__ == '__main__':
 
-    project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
-    cwa_data_path = f'{project_root}/data/Wave-2/cwa'
-    output_path = f'{project_root}/data/Wave-2/Parquet'
+    # project_root = '/Users/sshahidi/PycharmProjects/Sleep-Wake'
+    cwa_data_path = 'gs://sleep-wake/data/Wave-2/cwa'
+    local_path = "."
+    output_path = 'gs://sleep-wake/data/Wave-2/Parquet'
 
-    os.makedirs(output_path, exist_ok=True)
+    # os.makedirs(output_path, exist_ok=True)
     # assert len(os.listdir(output_path)) == 0, "Output directory is not empty."  # Avoid writing next to existing data files
     
     subject_ids = list_all_subject_ids(cwa_data_path, 'cwa')
@@ -31,7 +35,7 @@ if __name__ == '__main__':
             print(f"Skipping {subject_id}")
             continue
             
-        # This may seem twiseted and unneccessary
+        # This may seem twisted and unneccessary
         # But it's a backward-compatible way to get this to work with old code
         prefix = subject_id[0]
         id = int(subject_id[1:])
@@ -52,13 +56,14 @@ if __name__ == '__main__':
 
         features_df = process_AX3_raw_data(features_df,
                                            normalise_columns=['X', 'Y', 'Z', 'Temp'],
-                                           round_timestamps=False,
-                                           down_sample_rate=1000
-                                           )
+                                           round_timestamps=False)
 
-        print(features_df.head())
         print('Writing to parquet...')
-        features_df.to_parquet(f'{output_path}/AX3_sub_{subject_id}.parquet', compression=None)
+        local_filename = f"{local_path}/AX3_sub_{subject_id}.parquet"
+        features_df.to_parquet(local_filename, compression=None)
+
+        upload_cmd = f"gcloud storage mv {local_filename} {output_path}/"
+        subprocess.run(upload_cmd.split(" "))
 
         print(datetime.now() - t1)
         

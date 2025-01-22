@@ -3,7 +3,9 @@ import os
 import numpy as np
 from actipy import read_device
 from config import project_config as config
-import re
+import subprocess
+from skimage.measure import block_reduce
+from utils.helpers import list_blobs
 
 
 def read_AWS_labels(path, subject_id):
@@ -23,8 +25,14 @@ def read_AWS_labels(path, subject_id):
     return aws_df
 
 
-def read_PSG_labels(path, subject_id):
-    labels_df = pd.read_csv(f'{path}/SDRI001_PSG_Sleep profile_{subject_id:03d}V4_N1.txt', skiprows=1, delimiter=';', header=None)
+def read_PSG_labels(path, subject_id, subject_prefix=None):
+    
+    subject_prefix = '' if subject_prefix is None else subject_prefix
+    
+    filenames = [fn for fn in os.listdir(path) if fn.endswith('.txt') and (fn.find(f"{subject_prefix}{subject_id:03d}") >= 0)]
+    filename = f"{path}/{filenames[0]}"
+    
+    labels_df = pd.read_csv(filename, skiprows=1, delimiter=';', header=None)
     labels_df = labels_df.rename({0: 'epoch_ts', 1: 'PSG Sleep'}, axis=1)
     labels_df['PSG Sleep'] = labels_df['PSG Sleep'].str.strip()  # remove extra spaces
     
@@ -62,8 +70,21 @@ def read_parquet_AX3_epochs(path, subject_id, round_timestamps, subject_prefix=N
     # This is a backward-compatible fix. Wave-1 data doesn't have this prefix. Wave-2 does.
     subject_prefix = '' if subject_prefix is None else subject_prefix
 
-    filename = f'{path}/AX3_sub_{subject_prefix}{subject_id:03d}.parquet'
-    subject_data = pd.read_parquet(filename)
+    filename = f'AX3_sub_{subject_prefix}{subject_id:03d}.parquet'
+    
+    if path.startswith('gs://'):
+        download_parquet = f'gcloud storage cp {path}/{filename} .'
+        subprocess.run(download_parquet.split(' '))
+        path_to_file = filename  # file in curr dir
+    else:
+        path_to_file = f"{path}/{filename}"
+        
+    subject_data = pd.read_parquet(path_to_file)
+
+    if path.startswith('gs://'):
+        # Delete local copy
+        delete_local_file = f'rm {filename}'
+        subprocess.run(delete_local_file.split(' '))
 
     subject_data = subject_data[['subject_id', 'epoch_ts', 'X', 'Y', 'Z', 'Temp']]
 
@@ -83,13 +104,22 @@ def read_AX3_cwa(path, subject_id, subject_prefix=None, freq=config['AX3_freq'],
 
     rows_per_epoch = freq * seconds_per_epoch
 
-    cwa_files = [f for f in os.listdir(f'{path}') if f.endswith('.cwa')]
+    if path.startswith('gs://'):
+        print(path)
+        cwa_files = [f.split('/')[-1] for f in list_blobs(path) if f.endswith('.cwa')]
+        print(cwa_files)
+    else:
+        cwa_files = [f for f in os.listdir(path) if f.endswith('.cwa')]
 
     # This is a backward-compatible fix. Wave-1 data doesn't have this prefix. Wave-2 does.
-    subject_prefix = '' if subject_prefix is None else subject_prefix
+    # That "_" is for wave-1 files. In particular 001 is the id for subject 1. But all files also have "001" in their names
+    # elsewhere. That "_" prevents catching that other "001" in file names
+    subject_prefix = '_' if subject_prefix is None else subject_prefix
         
-    subject_files = [filename for filename in cwa_files if filename.find(f'_{subject_prefix}{subject_id:03d}') >= 0]
-    
+    print(f'{subject_prefix}{subject_id:03d}')
+    subject_files = [filename for filename in cwa_files if filename.find(f'{subject_prefix}{subject_id:03d}') >= 0]
+    print(subject_files)
+    print('-'*80)
     subject_data = pd.DataFrame()
     for i, filename in enumerate(subject_files):
         print(f'File {i + 1}:')
@@ -98,8 +128,21 @@ def read_AX3_cwa(path, subject_id, subject_prefix=None, freq=config['AX3_freq'],
         # For unlabelled data (no PSG label) we will compare our epochs to the output of the other
         # toolbox (https://github.com/OxWearables/biobankAccelerometerAnalysis/tree/master)
         # and drop epochs that it doesn't predict for (i.e. it decides they are non-wear epochs)
-        data_chunk, info = read_device(f'{path}/{filename}', resample_hz=freq, detect_nonwear=False)
+        
+        if path.startswith('gs://'):
+            download_cwa = f'gcloud storage cp {path}/{filename} .'
+            subprocess.run(download_cwa.split(' '))
+            path_to_file = filename  # file in curr dir
+        else:
+            path_to_file = f"{path}/{filename}"
+            
+        data_chunk, info = read_device(path_to_file, resample_hz=freq, detect_nonwear=False)
 
+        if path.startswith('gs://'):
+            # Delete local copy
+            delete_local_cwa = f'rm {filename}'
+            subprocess.run(delete_local_cwa.split(' '))
+        
         data_chunk = data_chunk.drop(columns=['light'])
 
         # Resetting the index has two functions:
@@ -127,7 +170,7 @@ def read_AX3_cwa(path, subject_id, subject_prefix=None, freq=config['AX3_freq'],
     return subject_data
 
 
-def process_AX3_raw_data(df, round_timestamps, normalise_columns=[]):
+def process_AX3_raw_data(df, round_timestamps, normalise_columns=[], down_sample_rate=None):
 
     # Normalising features
     for col in normalise_columns:
@@ -151,11 +194,15 @@ def process_AX3_raw_data(df, round_timestamps, normalise_columns=[]):
         # Timestamps of PSG labels are at 0 and 30 seconds. We need to somehow align these timestamps with those of the labels
         df['epoch_ts'] = df['epoch_ts'].dt.floor('30s')  # Round down [0, 29] to 0 and [30, 59] to 30
 
+    if down_sample_rate:
+        for col in normalise_columns:
+            df[col] = df[col].apply(lambda x: block_reduce(np.array(x), block_size=down_sample_rate, func=np.max))
+        
     return df
 
 
-def read_sleep_dairies(path, include_naps):
-    raise NotImplementedError("These sleep diary files are old. Use the read_sleep_dairies_v2 function")
+def deprecate_read_sleep_diaries(path, include_naps):
+    raise NotImplementedError("Use the read_sleep_diaries function")
     sleep_diary_df = pd.DataFrame()
     for filename in [f for f in os.listdir(path) if f.endswith('csv')]:
         if filename.find('nap') >= 0:
@@ -183,7 +230,7 @@ def read_sleep_dairies(path, include_naps):
     return sleep_diary_df
 
 
-def read_sleep_dairies_v2(path, include_naps):
+def read_sleep_diaries(path, include_naps):
 
     def clean_time_column(time_col):  # This is some messy data (times as strings) cleaning
         def strip_junk_chars(s):
@@ -204,14 +251,14 @@ def read_sleep_dairies_v2(path, include_naps):
     # # # # # File 1: ids 1-18
     # # # # # # # # # # # # # # # 
 
-    sleep_df_1 = pd.read_excel(f'{path}/SRC_DRI_001_SleepDiary_All_v5.0_20JAN2021.xlsx', sheet_name='Tot_sample')
+    sleep_df = pd.read_excel(f'{path}/SRC_DRI_001_SleepDiary_All_v5.0_20JAN2021.xlsx', sheet_name='Tot_sample')
 
-    sleep_df_1 = sleep_df_1.sort_values(['participantNo', 'date_gotosleep']).reset_index(drop=True)
+    sleep_df = sleep_df.sort_values(['participantNo', 'date_gotosleep']).reset_index(drop=True)
     
-    sleep_df_1['lights_off'] = pd.to_datetime(sleep_df_1['date_gotosleep'].astype(str) + ' ' + sleep_df_1['gotosleep'].astype(str))
-    sleep_df_1['lights_on'] = pd.to_datetime(sleep_df_1['date_finalawake'].astype(str) + ' ' + sleep_df_1['finalawake'].astype(str))
-    sleep_df_1 = sleep_df_1[['participantNo', 'lights_off', 'lights_on']]
-    sleep_df_1 = sleep_df_1.rename({'participantNo': 'subject_id'}, axis=1)
+    sleep_df['lights_off'] = pd.to_datetime(sleep_df['date_gotosleep'].astype(str) + ' ' + sleep_df['gotosleep'].astype(str))
+    sleep_df['lights_on'] = pd.to_datetime(sleep_df['date_finalawake'].astype(str) + ' ' + sleep_df['finalawake'].astype(str))
+    sleep_df = sleep_df[['participantNo', 'lights_off', 'lights_on']]
+    sleep_df = sleep_df.rename({'participantNo': 'subject_id'}, axis=1)
 
     # # # # # # # # # # # # # # # 
     # # # # # File 2: ids 19-36
@@ -287,7 +334,58 @@ def read_sleep_dairies_v2(path, include_naps):
     
     # Concat the three
 
-    concat_list = [sleep_df_1, sleep_df_2]
+    concat_list = [sleep_df, sleep_df_2]
+    if include_naps:
+        concat_list += [nap_df]
+
+    diary = pd.concat(concat_list)
+    
+    if include_naps:
+        diary['is_nap'] = diary['is_nap'].fillna(0)  # night sleep files didn't have this column
+
+    return diary
+
+
+def read_sleep_diaries_wave_2(path, include_naps):
+
+    # # # # # # # # # # # # # # # 
+    # # # # # Sleep
+    # # # # # # # # # # # # # # # 
+    diaries = pd.read_excel(f'{path}/DRI006_Final_sleepdataset_for_analysis_28_11_2024.xlsx', sheet_name=['Study partner', 'PLWD', 'Healthy'])
+    sleep_df = pd.concat(diaries.values())
+    
+    sleep_df = sleep_df.sort_values(['participant_no', 'date_gotosleep']).reset_index(drop=True)
+    
+    sleep_df = sleep_df.dropna(subset=['gotosleep', 'finalawake'])
+    
+    sleep_df['lights_off'] = pd.to_datetime(sleep_df['date_gotosleep'].astype(str) + ' ' + sleep_df['gotosleep'].astype(str))
+    sleep_df['lights_on'] = pd.to_datetime(sleep_df['date_finalawake'].astype(str) + ' ' + sleep_df['finalawake'].astype(str))
+    sleep_df = sleep_df[['participant_no', 'lights_off', 'lights_on']]
+    sleep_df = sleep_df.rename({'participant_no': 'subject_id'}, axis=1)
+    
+    # # # # # # # # # # # # # # # 
+    # # # # # Naps
+    # # # # # # # # # # # # # # # 
+
+    if include_naps:
+        nap_df = pd.read_csv(f'{path}/SRCDRI001_Sleep Diary 019-036_nap.csv')
+        nap_df[lights_off_col] = pd.to_datetime(nap_df['date_startnap'].astype(str) + ' ' + nap_df['nap_start'].astype(str))
+        nap_df[lights_on_col] = pd.to_datetime(nap_df['date_endnap'].astype(str) + ' ' + nap_df['nap_end'].astype(str))
+        # nap_df = nap_df.rename({'participant_no': 'subject_id'}, axis=1)
+        cols_to_keep = ['participant_no', lights_off_col, lights_on_col]
+        nap_df = nap_df[cols_to_keep]
+
+        nap_df = nap_df.rename({
+            'participant_no': 'subject_id',
+            lights_off_col: 'lights_off',
+            lights_on_col: 'lights_on',
+        }, axis=1)
+
+        nap_df.insert(len(nap_df.columns), 'is_nap', 1)
+    
+    # Concat the three
+
+    concat_list = [sleep_df]
     if include_naps:
         concat_list += [nap_df]
 
