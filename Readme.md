@@ -1,3 +1,7 @@
+# Sleep-Wake Detection
+
+This project develops a deep learning model to classify AX3 activity data, recorded by digital activity trackers, into periods of sleep and wake.
+
 # Environemnt
 
 Create a conda environment and install the requirements:
